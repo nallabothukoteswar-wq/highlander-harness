@@ -1,0 +1,89 @@
+# Hypotheses for Highlander evaluation
+# These will be tested by the analysis code
+
+hypotheses:
+  H1:
+    name: "Duplicates (dup workload, pause fault)"
+    description: "C1u, C3, C3r and C4 accept zero duplicate effects. C1 and C2 accept more than zero."
+    conditions:
+      - condition: ["C1u", "C3", "C3r", "C4"]
+        workload: "dup"
+        expected: "zero duplicates"
+      - condition: ["C1", "C2"]
+        workload: "dup"
+        expected: "more than zero duplicates"
+
+  H2:
+    name: "Stale overwrites (ordered workload, pause fault)"
+    description: "C1v, C2f, C3, C3r and C4 accept zero. C1, C1u and C2 accept more than zero."
+    conditions:
+      - condition: ["C1v", "C2f", "C3", "C3r", "C4"]
+        workload: "ordered"
+        expected: "zero stale overwrites"
+      - condition: ["C1", "C1u", "C2"]
+        workload: "ordered"
+        expected: "more than zero stale overwrites"
+
+  H3:
+    name: "Wasted work"
+    description: "C1v has more rejected attempts and more wasted preparation CPU per 1,000 items than C3."
+    conditions:
+      - condition: "C1v"
+        workload: "ordered"
+        comparison: "greater than C3"
+      - condition: "C3"
+        workload: "ordered"
+        comparison: "baseline"
+
+  H4:
+    name: "Late accepts (Series C)"
+    description: "C3 has zero late accepts. C3r can have more than zero. C3r's late accepts do not increase as d increases."
+    conditions:
+      - condition: "C3"
+        expected: "zero late accepts"
+      - condition: "C3r"
+        expected: "more than zero late accepts"
+        trend: "does not increase with d"
+
+  H5:
+    name: "Ambiguous retry (Series D)"
+    description: "C2f accepts duplicates on retries. C3 leaves ambiguous retries unresolved (rejected as dup_key). C4 returns the byte-identical original response on every replay."
+    conditions:
+      - condition: "C2f"
+        expected: "duplicates accepted on retry"
+      - condition: "C3"
+        expected: "unresolved ambiguous (dup_key)"
+      - condition: "C4"
+        expected: "byte-identical replay"
+
+  H6:
+    name: "Takeover (Series E)"
+    description: "observed takeover ≤ max(0, L − Δ) + P + S + W, in trials where the observed P, S and W stayed within their declared budgets."
+    conditions:
+      - condition: "C3"
+        workload: "dup"
+        bound: "max(0, L − Δ) + P + S + W"
+        budgets:
+          P: 2  # seconds
+          S: 0.5  # seconds
+          W: 0.5  # seconds
+
+  H7:
+    name: "Capacity (Series F)"
+    description: "at λ_peak = 5μ with h = 0.20 (so n_req = 7), 7 replicas meet the p99 SLO, and 6 replicas show a higher SLO-violation fraction."
+    conditions:
+      - n_replicas: 7
+        expected: "meets p99 SLO"
+      - n_replicas: 6
+        expected: "higher SLO-violation fraction"
+
+  H8:
+    name: "Release (Series G, descriptive expectation)"
+    description: "Extra replica-seconds rank blue-green > canary > rolling. Canary has the longest time-to-full-traffic."
+    conditions:
+      - mechanism: "blue-green"
+        expected: "highest extra replica-seconds"
+      - mechanism: "canary"
+        expected: "middle extra replica-seconds, longest time-to-full-traffic"
+      - mechanism: "rolling"
+        expected: "lowest extra replica-seconds"

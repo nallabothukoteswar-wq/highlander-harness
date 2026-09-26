@@ -1,0 +1,26 @@
+# RBAC for Highlander workers
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: worker
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: worker
+subjects:
+- kind: ServiceAccount
+  name: worker
+roleRef:
+  kind: Role
+  name: worker
+  apiGroup: rbac.authorization.k8s.io

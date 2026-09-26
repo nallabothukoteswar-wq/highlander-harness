@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install psycopg[binary] pytest numpy scipy pandas matplotlib pyyaml ruff
+
+    - name: Run lint
+      run: |
+        ruff check .
+
+    - name: Run protocol tests
+      env:
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: highlander_test
+        DB_USER: postgres
+        DB_PASSWORD: testpassword
+      run: |
+        pytest tests/test_protocol.py -v
+
+    - name: Run stats tests
+      run: |
+        pytest tests/test_stats.py -v
+
+    - name: Run SQL lint test
+      env:
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: highlander_test
+        DB_USER: postgres
+        DB_PASSWORD: testpassword
+      run: |
+        pytest tests/test_protocol.py::test_sql_lint -v
+
+  smoke-kind:
+    runs-on: ubuntu-latest
+    # Only run this job on main branch or when explicitly triggered
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install psycopg[binary] typer kubernetes numpy scipy pandas matplotlib pyyaml pytest
+
+    - name: Install kind
+      run: |
+        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+
+    - name: Install kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+
+    - name: Create kind cluster
+      run: |
+        kind create cluster --config k8s/kind-config.yaml
+
+    - name: Set up PostgreSQL in cluster
+      run: |
+        kubectl apply -f k8s/postgres.yaml
+        kubectl wait --for=condition=ready pod -l app=postgres --timeout=300s
+
+    - name: Run smoke test
+      env:
+        PLATFORM: kind
+      run: |
+        # This would run the actual smoke test
+        # For now, just verify cluster is up
+        kubectl get nodes
+        kubectl get pods
+
+    - name: Upload smoke test outputs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: smoke-test-outputs
+        path: data/
+
+    - name: Cleanup kind cluster
+      if: always()
+      run: |
+        kind delete cluster

@@ -1,0 +1,80 @@
+# Worker StatefulSet for Highlander
+# Each pod has two containers: worker and helper, with shared process namespace
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: worker
+  labels:
+    app: worker
+spec:
+  serviceName: worker
+  replicas: 3
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      shareProcessNamespace: true
+      containers:
+      - name: worker
+        image: highlander-worker:latest  # Replace with actual image
+        env:
+        - name: TRIAL_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['trial_id']
+        - name: CONDITION
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['condition']
+        - name: WORKLOAD
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['workload']
+        - name: WORKER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NUM_WORKERS
+          value: "3"
+        - name: PLATFORM
+          value: "kind"
+        - name: DB_HOST
+          value: postgres
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: highlander
+        - name: DB_USER
+          value: worker_rw
+        - name: DB_PASSWORD
+          value: worker_password
+        - name: RSINK_DB_HOST
+          value: postgres
+        - name: RSINK_DB_PORT
+          value: "5432"
+        - name: RSINK_DB_NAME
+          value: highlander
+        - name: RSINK_DB_USER
+          value: rsink_rw
+        - name: RSINK_DB_PASSWORD
+          value: rsink_password
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        # No liveness probe - would confound SIGSTOP
+      - name: helper
+        image: highlander-helper:latest  # Replace with actual image
+        command: ["/bin/sh", "-c", "sleep infinity"]
+        volumeMounts:
+        - name: shared
+          mountPath: /shared
+        securityContext:
+          runAsUser: 1000  # Same as worker
+      volumes:
+      - name: shared
+        emptyDir: {}
+      restartPolicy: Always

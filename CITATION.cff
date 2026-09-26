@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Highlander: Workload-Aware Deployment Pattern Selection for Cloud-Native Commerce Systems"
+authors:
+  - family-names: "TODO"
+    given-names: "TODO"
+  - family-names: "TODO"
+    given-names: "TODO"
+version: "1.0.0"
+doi: "TODO"
+date-released: "2026-09-26"
+url: "https://github.com/TODO/highlander-harness"
