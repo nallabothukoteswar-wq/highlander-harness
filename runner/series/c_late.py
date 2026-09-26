@@ -17,6 +17,7 @@ class SeriesC:
                     "condition": condition,
                     "workload": "ordered",
                     "d": d,
+                    "first_write_delay_s": 2.0,
                     "series": "C"
                 })
 

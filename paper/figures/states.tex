@@ -1,0 +1,16 @@
+\begin{tikzpicture}[font=\fontsize{8}{9}\selectfont,>=Latex,
+ s/.style={draw,rounded corners,minimum width=1in,minimum height=.32in,fill=blue!4},
+ lab/.style={font=\fontsize{8}{9}\selectfont,align=center,fill=white,inner sep=1pt}]
+\node[s] (s) at (0,0) {Standby};\node[s] (c) at (4,0) {Candidate};
+\node[s] (a) at (8,0) {Active};\node[s] (d) at (12,0) {Draining};
+\node[s] (f) at (6,-2) {Failed};
+\draw[->] (s)--node[lab,above,yshift=13pt]{work [enabled]}(c);
+\draw[->] (c)--node[lab,above,yshift=13pt]{grant [atomic CAS wins]}(a);
+\draw[->] (c.north) to[out=145,in=35] node[lab,above,yshift=3pt]{denied [valid owner]}(s.north);
+\draw[->] (a)--node[lab,above,yshift=13pt]{renew fails [uncertain]\\shutdown [requested]}(d);
+\draw[->] (c.south)--node[lab,left]{crash [any]}(f.north west);
+\draw[->] (a.south)--node[lab,right]{crash [any]}(f.north east);
+\draw[->] (d.south) |- node[lab,pos=.65,below]{crash [any]}(f.east);
+\draw[->] (f.west) -| node[lab,pos=.35,below]{recover [reconciled]}(s.south);
+\draw[->] (d.north) -- (12,1.55) -- node[lab,above,yshift=2pt]{settled [durable checkpoint]} (0,1.55) -- (s.north);
+\end{tikzpicture}

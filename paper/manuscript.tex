@@ -1,0 +1,251 @@
+\documentclass[conference,10pt]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,booktabs,array,tabularx,graphicx,float,xurl}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+\newfloat{algorithm}{tb}{loa}
+\floatname{algorithm}{Algorithm}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\title{Workload-Aware Deployment Pattern Selection for Cloud-Native Commerce Systems}
+\author{\IEEEauthorblockN{Koteswararao Nallabothu}
+\IEEEauthorblockA{Lead Software Engineer\\Lowe's\\Charlotte, NC, USA\\Nallabothukoteswar@gmail.com}
+\and\IEEEauthorblockN{Naresh Alapati}
+\IEEEauthorblockA{Principal Cloud Architect\\Walmart\\Bentonville, AR, USA\\narencachy@gmail.com}}
+\begin{document}
+\maketitle
+\raggedbottom
+\begin{abstract}
+Commerce platforms combine high-concurrency request serving with effects that must not be repeated or applied out of order. We present a workload-aware method that separates three decisions: serving topology, effect discipline, and release mechanism. Its Highlander policy, named for the ``there can be only one'' constraint, establishes a single effective writer per conflicting resource at participating sinks, rather than exclusive physical execution. The method distinguishes operation-key deduplication from epoch fencing: uniqueness suppresses repeated effects; a sink version check blocks regressions when source order is available, while fencing protects authority-ordered publications. An atomic ownership transaction binds a lease holder to its epoch, preventing a delayed former holder from obtaining a newer token while a successor's lease is valid. We give a decision algorithm, a sink safety argument, and takeover bounds with explicit timing assumptions. A Kubernetes-hosted evaluation protocol isolates eight mechanism combinations across duplicate-effect and ordered-publication workloads, records wasted work, and accounts for uncertainty in fault timing. An illustrative capacity calculation requires seven replicas for an assumed 600 requests/s peak, 120 requests/s per-replica capacity, and a 20\% reserve. In 30 controlled SQLite interleavings per cell, a version check admitted no version regressions and co-located fences admitted no epoch regressions; a remote fence admitted 933 late accepts before its successor's first write. These mechanism observations do not estimate production performance or reliability.
+\end{abstract}
+\begin{IEEEkeywords}
+fencing, idempotency, leader election, Kubernetes, deployment, reliability
+\end{IEEEkeywords}
+
+\section{Introduction}
+An inventory worker can resume after a pause and publish feed version 7 after another worker has published version 8. Unique operation keys do not prevent this rollback: the publications have different identities. A sink conditional on a usable source version does prevent it without leadership. Conversely, a unique key can suppress duplicate loyalty accrual without a leader. These examples expose two correctness requirements that must be evaluated separately. Serving capacity is independent of both. A checkout API can require many active replicas and a provider idempotency key for payment capture at the same time.
+
+Rolling, blue-green and canary methods control how versions receive traffic \cite{r1,r2,r3}; they do not establish exclusive effect ownership. We use \emph{Highlander} as an operational policy name, not a Kubernetes feature or a new consensus algorithm. It denotes one effective writer per conflict key at a sink that checks epochs when order follows ownership or the sink cannot compare source versions. Old and new processes may execute simultaneously, but a stale epoch must not change protected state.
+
+Our contributions are (i) a three-lane decision procedure combining capacity, availability, effect semantics and release risk; (ii) an ownership protocol whose acquisition atomically binds holder and epoch, together with a sink safety argument; and (iii) an ablation protocol that distinguishes duplicates, version regressions, epoch regressions, late accepts and rejected work against a conditional-version baseline. Sections II--IV give context, selection and protocol. Section V evaluates the protocol and deployment trade-offs. Sections VI--VII discuss applicability and future work.
+
+\section{Background and Related Work}
+Leases bound ownership in time \cite{r4}; Chubby \cite{r5}, ZooKeeper \cite{r6} and Raft \cite{r7} provide coordination and replicated-state foundations. They do not make a third-party payment or notification service transactional. Fencing tokens \cite{r8}, retry-safe effects \cite{r9} and compensating transactions \cite{r10} address different boundaries. A token orders writers; an operation key identifies a repeated request; a saga compensates committed work. None is interchangeable with the others.
+
+Borg, Omega and later Borg traces demonstrate heterogeneous cluster scheduling \cite{r11,r12,r13}. MillWheel and Photon offer stronger processing semantics within their own state and output models \cite{r14,r15}; those guarantees do not automatically cover arbitrary external APIs. Continuous-experimentation research \cite{r16} and canary analysis \cite{r17} motivate staged exposure and version-specific metrics. Kubernetes supplies rolling updates \cite{r1}, Jobs \cite{r18}, readiness \cite{r19}, Leases \cite{r20} and autoscaling \cite{r21}; Argo adds progressive delivery controls \cite{r22}. We do not claim to invent leases, fencing or canary releases. Table~\ref{tab:related} positions the systematization.
+
+\begin{table}[t]
+\caption{Scope relative to prior work}\label{tab:related}
+\centering\scriptsize
+\begin{tabularx}{\columnwidth}{p{.8in}YY}\toprule
+Work & Primary scope & Selection contribution\\\midrule
+Leases / locks & Ownership & No topology/release rule\\
+Keys / sagas & Retry/compensation & No capacity rule\\
+Clusters & Placement/resources & No sink policy\\
+Canary & Exposure/metrics & No epoch guarantee\\
+This work & Three decisions & Rule and ablations\\\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{System Model and Pattern Selection}
+Let $\lambda_{\mathrm{peak}}$ be peak requests/s, $\mu$ the measured safe throughput of one replica at a declared request mix and latency objective, and $h\in[0,1)$ the reserve fraction. Approximately balanced serving requires
+\begin{equation}
+n_{\mathrm{req}}=\left\lceil\frac{\lambda_{\mathrm{peak}}}{\mu(1-h)}\right\rceil .\label{eq:capacity}
+\end{equation}
+This planning condition is not a latency guarantee: dependencies, skew and queueing can invalidate the assumed $\mu$. For rare, non-overlapping failures, let $f$ be expected failures per period $T$ and $R$ mean takeover time. A single-active service passes the availability screen only if
+\begin{equation}
+fR\leq(1-\mathrm{SLO})T,\qquad R\leq\mathrm{RTO}.\label{eq:budget}
+\end{equation}
+Tail-sensitive objectives require a percentile or correlated-failure analysis beyond this expectation. A standby may reduce recovery time but contributes no serving throughput.
+
+Let $D$ be tolerated duplicate effects per period, $\rho$ the predeclared release-risk category, and $E$ the effect semantics. Algorithm~1 evaluates every component in three lanes. A composite application receives both a serving plan and a worker/effect plan; effect handling never substitutes for capacity sizing. Unknown serving measurements return \texttt{MEASURE\_FIRST}, avoiding arithmetic on a missing $\mu$. A batch-only component has no requests/s sizing branch. Figure~\ref{fig:selection} summarizes the lanes.
+
+\begin{algorithm}[t]
+\caption{Deployment Pattern Selection}
+\footnotesize
+\textbf{Input:} servesRequests, $\lambda_{\rm peak},\mu,h,R$, RTO, $D,\rho$, SLO, $E,f,T$.\\
+\textbf{Output:} (serving topology, effect discipline, release).
+\begin{enumerate}\setlength\itemsep{0pt}\setlength\parskip{0pt}
+\item If servesRequests and ($\mu$ or $R$ unknown), return \texttt{MEASURE\_FIRST} for the component.
+\item \textbf{Serving:} If servesRequests, compute (1)--(2). If $n_{\rm req}>1$ or (2) fails, select active-active; otherwise single-active is eligible after risk acceptance. If not serving, set serving topology to N/A.
+\item \textbf{Effect:} Independently classify $E$: none $\to$ no effect guard; keyable/local transaction $\to$ unique operation key; source-versioned state $\to$ conditional version write; authority-ordered state $\to$ per-key lease and epoch fence; external non-idempotent effect $\to$ provider key, outbox and reconciliation.
+\item Combine disciplines if effects overlap. If $D=0$ and required sink/provider protection is unavailable, block the effect path pending redesign; if $D>0$, record and monitor an explicit duplicate policy. Ownership may also reduce contention and rejected preparation work.
+\item \textbf{Release:} Independently, high behavioral $\rho$ selects canary analysis gates; high rollback urgency selects blue-green with compatible state; otherwise select rolling with availability controls.
+\end{enumerate}
+\end{algorithm}
+
+\begin{figure*}[t]\centering
+\input{figures/selection.tex}
+\caption{Three independent selection lanes. A checkout API can receive active-active serving, provider idempotency controls and a canary release simultaneously. The measurement exit applies only to request-serving components.}\label{fig:selection}
+\end{figure*}
+
+For illustration, $\lambda_{\rm peak}=600$, $\mu=120$ requests/s and $h=0.20$ give $\lceil600/96\rceil=7$. Six replicas provide 576 requests/s after reserve and fail the condition; seven provide 672 requests/s, or 72 requests/s beyond the assumed peak. These are declared inputs and arithmetic, not observations. The availability screen remains symbolic until $f$ and $R$ are measured. Table~\ref{tab:mapping} gives composite outcomes.
+
+\begin{table}[t]\caption{Workload-to-pattern mapping}\label{tab:mapping}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{p{.77in}YY}\toprule
+Workload & Serving plan & Effect discipline\\\midrule
+Checkout API & Sized active-active & Provider key; reconcile capture\\
+Internal UI & (1)--(2) determine eligibility & Keyed local writes where needed\\
+Ordered feed job & N/A & Source version check; lease + fence for owner-defined order or costly contention\\
+Export API + job & Active-active API & Per-export key; bounded workers\\\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Highlander Architecture and Safety}
+\subsection{Effect boundary and atomic ownership}
+Figure~\ref{fig:architecture} separates requests from asynchronous work. For order-confirmation email, an outbox durably records intent, while a provider key or reconciliation addresses an ambiguous acknowledgment. Payment capture needs provider idempotency. An inventory feed with usable source versions can use a conditional version write; a search-index alias whose order is determined by its current publisher needs epoch fencing. Loyalty accrual often admits a unique business operation key. A system with several sinks needs protection at each sink; one database transaction cannot confer exactly-once behavior on an uncooperative external API.
+
+\begin{figure}[t]\centering\input{figures/architecture.tex}
+\caption{Reference architecture. The asynchronous branch is dashed. In the testbed, ownership validation, ledger insertion and effect mutation share a PostgreSQL transaction boundary.}\label{fig:architecture}
+\end{figure}
+
+Our testbed binds ownership and epoch in PostgreSQL: an owner row $(k,holder,e,expires\_at)$ is changed by a conditional update on the database clock. Acquisition assigns holder, increasing epoch and expiry in the \emph{same} transaction. Renewal requires matching holder and epoch and an unexpired row. Each process incarnation has a UUID. A sink-fenced write locks that row and atomically checks authority with its ledger/state update.
+
+We call this the \emph{lease-then-epoch race}: W1 acquires a Kubernetes Lease, pauses before requesting a separate epoch, and resumes after W2 has acquired a lease and token. Giving W1 a later token now legitimizes a zombie. Our protocol has no separate token-allocation operation: W1's delayed conditional acquisition is rejected while W2 owns an unexpired row. A pause after successful acquisition leaves W1 with its old epoch. Figure~\ref{fig:zombie}(b) illustrates this fix. A Kubernetes-only alternative must bind a holder change and epoch to the same compare-and-swap update, preserve monotonicity across object recreation, and use unique incarnation identities; it is not the protocol evaluated here.
+
+\subsection{State transitions and safety property}
+Table~\ref{tab:states} and Fig.~\ref{fig:states} describe local control states. ``Active'' is a client's belief, not proof that other processes stopped. Shutdown and uncertain renewal enter Draining. Crashes from Candidate, Active or Draining enter Failed; recovery returns to Standby only after durable-state reconciliation.
+
+\begin{table}[t]\caption{Worker transitions}\label{tab:states}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{p{.61in}YY}\toprule
+From & Event [guard] / action & To\\\midrule
+Standby & work [enabled] / acquire & Candidate\\
+Candidate & grant [atomic CAS wins] / begin & Active\\
+Candidate & denied [valid owner] / back off & Standby\\
+Active & renew fails [uncertain] / stop admission & Draining\\
+Active & shutdown [requested] / checkpoint & Draining\\
+Draining & settled [durable checkpoint] / stop & Standby\\
+Candidate, Active, Draining & crash [any] / no further action & Failed\\
+Failed & recover [reconciled] / rejoin & Standby\\\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{figure*}[t]\centering\input{figures/states.tex}
+\caption{Local states with event [guard] labels. The curved denial edge returns Candidate to Standby.}\label{fig:states}
+\end{figure*}
+
+For the combined discipline, let $e_{\rm current}(k)$ be the durable current epoch and $\mathcal{K}(k)$ the committed operation keys. The participating sink enforces
+\begin{equation}
+\operatorname{accept}(k,e,op)\Rightarrow e\geq e_{\rm current}(k)\land op\notin \mathcal{K}(k).\label{eq:safety}
+\end{equation}
+In the co-located fenced conditions, the implementation strengthens the epoch check to equality with the current holder and valid expiry; tokens are never accepted merely because a client presents a larger number. The effect and ledger update commit atomically. Monotonic epoch issuance and a serialized check-and-write reject a former epoch after its successor is installed. Atomic uniqueness rejects an already committed operation key even within the same epoch. This proves neither cross-sink atomicity nor exactly-once external effects, and does not forbid an earlier valid write before the successor acquires ownership. In fence-only C2f, only the epoch clause is enforced; in unique-only C1u, only the operation-key clause is enforced. C1v instead checks a monotone data version at the sink without acquiring ownership.
+
+\subsection{Time and failure assumptions}
+A client-side safety deadline is $t_{\rm renew}+L-\delta$: effects must finish before that deadline. For Kubernetes Lease clients, expiry is judged from local observations, not an API-server expiry clock. Here $\delta$ conservatively includes clock-\emph{rate} drift between candidates, observation delay and write-to-commit time \cite{r24}. No finite client-only margin proves safety under unbounded pauses. In our PostgreSQL implementation the database clock decides expiry and the sink transaction decides authority; client stopping is an optimization, not its safety foundation.
+
+Measured from the last successful renewal, acquisition and activation satisfy $R_{\rm renew}\leq L+P+S$ under bounded coordination and scheduling. From a crash $\Delta$ after renewal, time to the first accepted write instead satisfies
+\begin{equation}
+R_{\rm accept}\leq\max(0,L-\Delta)+P+S+W.\label{eq:takeover}
+\end{equation}
+$P$ covers detection/polling and coordinator response; $S$ covers activation and work preparation through the first successful submission; $W$ covers sink acceptance. A drain term $G$ is added only when a required serialized drain extends beyond expiry, not when it already occurred inside $L$. Unbounded partition or sink delay invalidates a finite bound. Expand/contract schema changes and backward-compatible checkpoints remain necessary: neither a traffic switch nor a ready Pod guarantees a safe worker-state rollback \cite{r19}.
+
+\begin{figure*}[t]\centering
+\begin{minipage}{.48\textwidth}\centering\input{figures/zombie.tex}\\(a) Stale effect after lease expiry\end{minipage}\hfill
+\begin{minipage}{.48\textwidth}\centering\input{figures/atomic-race.tex}\\(b) Atomic acquisition rejects a delayed contender\end{minipage}
+\caption{Two distinct pause hazards. (a) A sink rejects an old epoch after a successor's publication. (b) Binding holder and epoch in one conditional transaction prevents the separate-allocation race.}\label{fig:zombie}
+\end{figure*}
+
+\section{Evaluation}
+\subsection{Testbed and scope}
+The planned full protocol uses a two-node kind cluster on one host, PostgreSQL, three Python candidates, and a CPU-limited HTTP service. The co-located sink uses one database; the restricted remote sink uses a separate schema and role with no access to ownership; Kubernetes hosts and restarts processes. Run manifests capture images, Kubernetes/node metadata, configuration, fault parameters and seeds. The eight mechanism combinations are listed in Table~\ref{tab:ablation}.
+
+\begin{table}[t]\caption{Mechanism ablations. Lease is a PostgreSQL owner-row lease; co-located fence checks holder, epoch and expiry; C3r checks its sink epoch.}\label{tab:ablation}
+\centering\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{lccccc}\toprule
+Condition & Lease & Fence & Version & Unique & Replay\\\midrule
+C1 & -- & -- & -- & -- & --\\
+C1u & -- & -- & -- & Yes & --\\
+C1v & -- & -- & Yes & -- & --\\
+C2 & Yes & -- & -- & -- & --\\
+C2f & Yes & Yes & -- & -- & --\\
+C3 & Yes & Yes & -- & Yes & --\\
+C3r & Yes & Remote & -- & Yes & --\\
+C4 & Yes & Yes & -- & Yes & Yes\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Methodology and hypotheses}
+The planned cluster comparison at $b=10$, $d=1$ s has 30 planned trials per condition and workload (C1v: ordered only), with 1,000 logical items and randomized condition order. The separate sweep predeclares C1, C1u, C2, C1v (ordered only), and C3r, with 10 trials per cell for $b\in\{1,10,100\}$ and successor-to-resume delay $d\in\{0,1,5\}$ s; C3r sweep cells use the after-grant trigger and ordered workload. A C2 ordered-workload smoke trial with $b\geq10$ checks that a verified stop creates nonzero exposure. The duplicate workload reuses business operation keys after replay. The ordered workload publishes a source-sequenced version and a distinct operation key for each publisher/item pair. In C1, C1u and C1v, the source assigns a monotone generation sequence independently of any lease; a lower generation resuming after a higher publication is a version regression. The same source version construction is used in every condition. A version regression is an accepted write whose source version is lower than the stored version; this metric applies to every condition. An epoch (authority) regression is an accepted write whose epoch is lower than the highest already applied epoch; this metric applies only to lease conditions. Instrumentation records pre-write state, so neither metric infers ordering from arrival timestamps alone.
+
+A configurable in-flight batch is prepared before a worker self-stops with SIGSTOP. The Pod shares a process namespace with its sandbox, so the worker is not PID 1; the runner verifies process state T and a stopped database heartbeat before accepting the fault \cite{r25}. After a successor accepts a write (or, for paired C3/C3r, after its committed grant but before its first sink write), SIGCONT releases the captured batch without revalidating its already-admitted effects; the sink is the tested barrier. Batch size is recorded because it changes exposure. Hypotheses are that C1u and C3 both prevent repeated-key duplicates, whereas C1v prevents version regressions under the specified source-version workload and fenced conditions prevent epoch regressions. Epoch regressions represent authority-ordered effects, where no comparable data version exists and a version check cannot apply; C2 versus C2f/C3 isolates the fence. Fence-only C2f can still accept repeated operation keys. C4 tests replay-response stability, not a lower duplicate count than C3. C1v should have zero version regressions yet more rejected attempts and preparation CPU than C3 because three uncoordinated workers compete. Leadership can reduce wasted work even where source-version checking suffices for safety. The C3r fence tracks $e_{\rm current}$ per ownership key, here the whole feed, not per item: a late accept is an older-epoch effect accepted after a successor grant but before that successor writes to the remote sink. The grant-acknowledgment timestamp conservatively confirms the committed grant, and a delayed first write exposes this interval equally to C3 and C3r. In after-grant trials the successor waits $w_{\rm first}=2$ s before its first sink write. C3r late accepts are expected to be positive for $d\in\{0,1\}$ s and zero for $d=5$ s; C3 should have zero at every $d$.
+
+A separate replay series injects lost acknowledgments (5\% of accepted calls; the worker retries the same operation key after 50 ms) without a pause fault, comparing C2f, C3 and C4 on the duplicate workload with 30 trials each. Retries are classified as accepted duplicates (C2f), unresolved ambiguous rejections (C3), or stable or mismatched replays (C4).
+
+In the planned cluster campaign, wasted work is reported as rejected attempts and their measured preparation CPU nanoseconds. Replayed responses are counted separately. The synthetic sink makes no provider calls; external-call waste is not inferred from database attempts. Failed and invalid trials are retained and reported. In that campaign, zero safety violations will be reported as violations divided by released at-risk batch attempts, with an exact one-sided 95\% Clopper--Pearson upper bound. Continuous measures receive trial-level percentile-bootstrap 95\% intervals with 10,000 resamples and seed 2026. Planned, valid and invalid $n$ are recorded.
+
+Planned takeover trials sweep $L\in\{5,10,15,30\}$ s and use SIGKILL without lease release. A helper records a database-clock marker before killing the worker PID; the runner brackets kill time and verifies a higher restart count. The final renewal log yields a $\Delta$ estimate and interval; each row is compared to (4) using declared $P,S,W$ budgets. Observed activation and sink times indicate whether those assumptions held. Graceful shutdown or immediate release would test a different path and is not mixed into this series.
+
+Planned serving experiments calibrate $\mu$ at a declared p99 target, reject load-generator saturation, and compare $n_{\rm req}-1$ and $n_{\rm req}$. Release experiments compare rolling, selector-switched blue-green and a client-weighted canary; this canary is not an Argo-controller benchmark. Green preparation and traffic-cutover intervals are recorded separately. Replica-seconds are an allocation proxy, not dollars. Table~\ref{tab:metrics} fixes the endpoints.
+
+\begin{table}[t]\caption{Evaluation endpoints}\label{tab:metrics}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{p{.80in}YY}\toprule
+Metric & Definition & Raw source\\\midrule
+Duplicates & Accepted repeated key & Sink attempts\\
+Version regressions & Accepted source version $<$ stored version; all conditions & Prior sink state\\
+Epoch regressions & Accepted epoch $<$ maximum applied epoch; lease conditions & Prior sink state\\
+Late accepts & Old epoch after grant, before new sink write & Grant/accept logs\\
+Wasted work & Rejections; preparation CPU & Sink attempts\\
+Takeover & Kill bracket to first effect & Fault/accept logs\\
+p99; violations & Latency; SLO failures & HTTP requests\\
+Release cost & Extra replica-seconds & Readiness logs\\\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Results}
+\begin{table*}[!t]\caption{Controlled SQLite interleaving outcomes. Thirty valid trials and zero invalid trials per applicable cell; each cell has 3,000 at-risk submissions. The production campaign was not run.}\label{tab:results}
+\centering\footnotesize\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lccccccc}\toprule
+Condition & $n_D^v/n_D^i$ & $n_O^v/n_O^i$ & Duplicates & Version reg. & Epoch reg. & Late & Rejected$_O$\\\midrule
+C1 & 30/0 & 30/0 & 3,000 & 3,000 & N/A & N/A & 0\\
+C1u & 30/0 & 30/0 & 0 & 3,000 & N/A & N/A & 0\\
+C1v & N/A & 30/0 & N/A & 0 & N/A & N/A & 3,000\\
+C2 & 30/0 & 30/0 & 3,000 & 3,000 & 2,067 & N/A & 0\\
+C2f & 30/0 & 30/0 & 3,000 & 0 & 0 & N/A & 3,000\\
+C3 & 30/0 & 30/0 & 0 & 0 & 0 & 0 & 3,000\\
+C3r & 30/0 & 30/0 & 0 & 933 & 0 & 933 & 2,067\\
+C4 & 30/0 & 30/0 & 0 & 0 & 0 & N/A & 3,000\\\bottomrule
+\end{tabular}
+\par\vspace{4pt}\parbox{.95\textwidth}{\scriptsize $D/O$: duplicate/ordered workloads; $v/i$: valid/invalid. Version and epoch regressions are counted separately on the ordered workload. Late is an accepted former-epoch write after grant and before the successor's first sink write. Rejected$_O$ counts delayed ordered attempts rejected by a guard. These are outcomes under a specified event schedule, not failure-rate estimates; CPU and provider costs were not measured.}
+\end{table*}
+
+\subsubsection{Controlled transactional interleavings}
+An exploratory study executed transactional writes in an in-memory SQLite database under a seeded, serialized event schedule, independently of the planned kind/PostgreSQL campaign. Each of 30 trials per condition submitted 100 delayed attempts after an authority change. The successor wrote first on approximately 70\% of ordered keys, using the same seeded schedule for every condition; the former writer carried a lower source version and epoch. The counts in Table~\ref{tab:results} therefore characterize imposed interleavings and implemented sink rules, not naturally occurring race frequencies. C1v rejected every lower-version attempt. C2 accepted 2,067 lower-epoch writes after epoch-2 effects; the co-located fences accepted none. C3r accepted 933 older-epoch writes after the successor's grant but before its first remote sink write. They were version regressions, but not epoch regressions because epoch 2 had not yet reached that sink. Across trials, C2's mean epoch regression count was 68.9 [67.2, 70.5] and C3r's mean late count was 31.1 [29.5, 32.8] per 100 at-risk attempts (10,000-resample percentile bootstrap, seed 2026).
+
+The fault-free retry series used 100 accepted calls per trial and paired seeded 5\% lost-ack draws. In each of 30 trials per condition, a lost acknowledgment led to a retry with the same operation key after 50 ms. The draws produced 165 retries for each condition: C2f accepted all 165 duplicate effects, C3 returned 165 unresolved duplicate rejections, and C4 returned 165 byte-identical cached responses with zero mismatches. The trial-level mean was 5.5 retries [4.7, 6.4] per 100 calls. Table~\ref{tab:replay} reports the distinct outcomes.
+\begin{table}[t]\caption{Controlled lost-ack retries (30 valid, zero invalid trials per condition; 165 retries each)}\label{tab:replay}
+\centering\footnotesize
+\begin{tabular}{lrrr}\toprule
+Condition & Duplicate accepted & Ambiguous reject & Stable replay\\\midrule
+C2f & 165 & 0 & 0\\
+C3 & 0 & 165 & 0\\
+C4 & 0 & 0 & 165\\\bottomrule
+\end{tabular}
+\end{table}
+
+A separate event-time sweep placed the successor's first write at 2 s after grant and resumed the former writer at $d\in\{0,1,5\}$ s. Each cell comprised 30 valid trials and 3,000 at-risk attempts. Figure~\ref{fig:sweep} shows C3r accepted every old write at $d=0,1$ s and rejected every old write at $d=5$ s; C3 rejected every old write at all three delays. These deterministic outcomes follow the chosen schedule. The 100 keys within a trial share a sink state and imposed ordering, so a zero count does not justify an independent-attempt binomial safety bound. The executable study and raw trial and summary CSVs accompany the manuscript; throughput, takeover latency, preparation CPU, replica-seconds, and SLO outcomes remain unmeasured.
+\begin{figure}[t]\centering
+\includegraphics[width=.98\columnwidth]{figures/after_grant.pdf}
+\caption{Controlled after-grant late-accept fraction from raw trial rows. A dotted line marks the successor's first write at 2 s. This event-time schedule does not measure real cluster delay.}\label{fig:sweep}
+\end{figure}
+
+\subsection{Threats to validity and artifact availability}
+The planned kind cluster shares one host; CPU contention and host faults would correlate otherwise separate Pods. The completed SQLite study serializes an imposed schedule and cannot characterize concurrent execution, actual pause duration, clock uncertainty, external service behavior, or operational cost. Synthetic effects omit provider behavior, cache skew and session affinity. SIGSTOP captures a defined delayed batch rather than every possible partition. PostgreSQL's transaction boundary is stronger than many external sinks. Cluster clock changes can affect expiry; bound interpretation requires clock and delay assumptions as well as a point estimate.
+
+\textit{Artifact Availability:} Source, manifests, SQL and protocol tests are publicly available at \url{https://github.com/nallabothukoteswar-wq/highlander-harness}. The experimental runner and analysis scripts remain under development. The exploratory raw CSVs are included in the repository; the planned cluster campaign has not generated data and an archival DOI remains unavailable.
+
+\section{Discussion and Limitations}
+Idempotency keys solve repeatable, keyable effects. A conditional version check blocks version regressions when source versions are comparable. Epoch fencing blocks epoch authority regressions for lease conditions when a lower epoch follows a higher one; a remote epoch fence can still admit an older epoch after a successor grant but before its first remote write. These metrics must be analyzed separately. Ownership can reduce contention and wasted work but does not prove that only one process is executing. An ordered workload must also define order within one epoch; our test worker publishes sequentially. If current-epoch operations can be reordered in transit, an additional version check is required. A fencing result must not be generalized to ordering that the sink never checks.
+
+A payment or email provider remains outside the local transaction: an outbox preserves intent but cannot settle an unknown external outcome alone. Per-key ownership avoids a global bottleneck for independent feeds. Interactive APIs retain active-active capacity sizing even when their effect paths are serialized. A low-traffic internal interface is single-active only when capacity and availability constraints both pass. During coordinator loss, stopping effects favors safety at the cost of progress. Blue-green rollback needs compatible state; canaries need representative traffic and version-tagged metrics. PodDisruptionBudgets restrict voluntary disruptions, not node loss \cite{r23}.
+
+The analytical results establish a decision decomposition and a conditional sink safety argument. The controlled SQLite outcomes expose the distinct version, epoch, and remote late-accept cases under their specified schedules; they do not establish production speedup, cost savings, or failure-rate reduction. The supplied PostgreSQL protocol tests target the unique-only, fence-only, atomic-acquisition, response-replay and restricted-remote-sink cases but were not executed here.
+
+\section{Conclusion and Future Work}
+Workload-aware deployment requires separate decisions for serving topology, effect discipline and release mechanism. Atomic ownership binds a holder to its fencing epoch, while atomic operation-key handling prevents repeat effects. The distinction is necessary to evaluate Highlander as a single-effective-writer policy without attributing uniqueness guarantees to leadership. Future work should assess production traces, multi-zone coordinator faults, reordered current-epoch publications and real provider idempotency contracts. The reported mechanism observations are limited to serialized SQLite interleavings; concurrent and production claims require the planned cluster campaign.
+
+\input{references.tex}
+\end{document}

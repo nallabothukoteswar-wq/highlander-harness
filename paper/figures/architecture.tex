@@ -1,0 +1,16 @@
+\begin{tikzpicture}[font=\fontsize{8}{9}\selectfont,>=Latex,
+ n/.style={draw,rounded corners,align=center,inner sep=3pt,fill=blue!4},
+ line/.style={->,semithick}]
+\node[n,text width=1.1in] (edge) at (0,0) {Edge / cache};
+\node[n,text width=1.1in,right=.22in of edge] (lb) {Load balancer};
+\node[n,text width=1.1in,below=.25in of lb] (web) {Ready web / API};
+\node[n,text width=1.1in,left=.22in of web] (domain) {Domain services};
+\node[n,text width=1.1in,below=.25in of domain] (queue) {Queue / scheduler};
+\node[n,text width=1.1in,right=.22in of queue] (workers) {Candidate workers};
+\node[n,text width=2.45in,below=.35in of queue.south east,anchor=north] (tx)
+ {\textbf{PostgreSQL transaction boundary}\\Owner/epoch check; operation-key check;\\effect + ledger update commit atomically};
+\draw[line] (edge)--(lb);\draw[line] (lb)--(web);\draw[line] (web)--(domain);
+\draw[line,dashed] (domain)--(queue);\draw[line,dashed] (queue)--(workers);
+\draw[line] (workers.south)--(tx.north east);
+\node[font=\fontsize{8}{9}\selectfont,below=3pt of tx] {Solid: request/transaction; dashed: asynchronous work};
+\end{tikzpicture}

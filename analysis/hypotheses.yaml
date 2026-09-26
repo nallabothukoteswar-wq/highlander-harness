@@ -14,15 +14,24 @@ hypotheses:
         expected: "more than zero duplicates"
 
   H2:
-    name: "Stale overwrites (ordered workload, pause fault)"
-    description: "C1v, C2f, C3, C3r and C4 accept zero. C1, C1u and C2 accept more than zero."
+    name: "Version regressions (ordered workload, pause fault)"
+    description: "Accepted source version below the stored version, measured in every condition; C1v directly checks this endpoint. A fence alone does not imply version order."
     conditions:
-      - condition: ["C1v", "C2f", "C3", "C3r", "C4"]
+      - condition: ["C1v"]
         workload: "ordered"
-        expected: "zero stale overwrites"
+        expected: "zero version regressions"
       - condition: ["C1", "C1u", "C2"]
         workload: "ordered"
-        expected: "more than zero stale overwrites"
+        expected: "measure version regressions"
+
+  H2_epoch:
+    name: "Epoch authority regressions (lease conditions, pause fault)"
+    description: "Accepted epoch below the highest already applied epoch; C2 versus C2f/C3 isolates the co-located fence."
+    conditions:
+      - condition: ["C2f", "C3", "C4"]
+        expected: "zero epoch regressions"
+      - condition: ["C2", "C3r"]
+        expected: "measure epoch regressions; remote C3r can admit a pre-first-write late accept"
 
   H3:
     name: "Wasted work"
@@ -37,7 +46,7 @@ hypotheses:
 
   H4:
     name: "Late accepts (Series C)"
-    description: "C3 has zero late accepts. C3r can have more than zero. C3r's late accepts do not increase as d increases."
+    description: "After-grant, ordered workload and 2 s successor first-write delay: C3 has zero at each d; C3r positive at d=0,1 s and zero at d=5 s."
     conditions:
       - condition: "C3"
         expected: "zero late accepts"

@@ -2,6 +2,18 @@
 
 Experiment harness for the paper "Workload-Aware Deployment Pattern Selection for Cloud-Native Commerce Systems" (Highlander).
 
+The seven-page IEEE conference manuscript source is in [`paper/manuscript.tex`](paper/manuscript.tex); its figures and references are in the same directory. The paper includes controlled SQLite interleaving results with [raw trials, summaries and scope notes](paper/supplementary/README.md). The planned Kubernetes/PostgreSQL campaign remains unrun.
+
+**Implementation status:** The runner, Series C after-grant delay, replay classification, and Series F/G service/load generation are incomplete. The commands below describe the intended interface and are not evidence that a full campaign succeeds. The analysis report entry point and several referenced files are still missing.
+
+Reproduce the limited SQLite mechanism study without a cluster:
+
+```bash
+python3 -m unittest tests.test_exploratory_sqlite -v
+python3 -m analysis.exploratory_sqlite --output paper/supplementary
+python3 -m analysis.plot_exploratory
+```
+
 ## Quick Start
 
 ### Prerequisites
@@ -72,9 +84,7 @@ make analyze
 
 ## Documentation
 
-- `RUNBOOK.md` - Detailed runbook with host requirements, runtimes, and troubleshooting
 - `docs/PROTOCOL.md` - SQL semantics, state machine, and fault semantics
-- `docs/PAPER_METHODS.md` - Code behavior description for paper Section V-A/B
 - `docs/DATA_DICTIONARY.md` - Raw file and column documentation
 
 ## Project Structure
@@ -85,13 +95,12 @@ highlander-harness/
   worker/         # Worker implementation (Python)
   runner/         # Experiment runner and series logic
   helper/         # Helper container scripts (kind platform)
-  httpsvc/        # HTTP service for Series F/G (Go)
-  loadgen/        # Load generator for Series F/G
+  paper/          # IEEE manuscript source and figures
   k8s/            # Kubernetes manifests
   analysis/       # Analysis code (tables, figures, statistics)
   tests/          # Protocol and unit tests
   docs/           # Documentation
-  data/           # Raw experiment outputs (gitignored)
+  data/           # Planned raw experiment outputs (gitignored)
 ```
 
 ## License

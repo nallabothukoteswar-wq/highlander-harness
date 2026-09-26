@@ -1,0 +1,14 @@
+\begin{tikzpicture}[font=\fontsize{8}{9}\selectfont, >=Latex,
+ box/.style={draw,rounded corners,align=left,inner sep=4pt,text width=2.08in,fill=blue!4},
+ line/.style={->,semithick}]
+\node[draw,fill=blue!10,align=center,text width=6.9in,inner sep=4pt] (input) at (0,0)
+ {Classify components, effects, demand, SLO/RTO and release risk; apply all three lanes};
+\node[box,anchor=north] (a) at (-2.37in,-.32in) {\textbf{Serving topology}\\Does this component serve requests?\\No $\to$ not applicable.\\Unknown $\mu$ or $R$ $\to$ MEASURE\_FIRST.};
+\node[box,anchor=north] (b) at (0,-.32in) {\textbf{Effect discipline}\\None $\to$ no effect control.\\Keyable/local $\to$ unique operation key.\\Source version $\to$ conditional write.\\Owner order $\to$ lease + fence.};
+\node[box,anchor=north] (c) at (2.37in,-.32in) {\textbf{Release mechanism}\\High behavior risk $\to$ canary gates.\\High rollback urgency $\to$ blue-green.\\Otherwise $\to$ rolling.};
+\node[box,below=5pt of a] (a2) {Known inputs: compute (1)--(2).\\$n>1$ or budget fails $\to$ active-active.\\Otherwise $\to$ single-active eligible.};
+\node[box,below=5pt of b] (b2) {External non-idempotent $\to$ provider key, outbox, reconciliation.\\$D=0$: block if protection unavailable.};
+\node[box,below=5pt of c] (c2) {All choices require compatibility, readiness and observable rollback criteria.};
+\foreach \x in {a,b,c} \draw[line] (input.south -| \x.north)--(\x.north);
+\draw[line] (a)--(a2);\draw[line] (b)--(b2);\draw[line] (c)--(c2);
+\end{tikzpicture}

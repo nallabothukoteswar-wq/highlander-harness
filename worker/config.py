@@ -41,7 +41,7 @@ class WorkerConfig:
 
     # Fault parameters
     resume_delay: float = float(os.getenv("RESUME_DELAY", "1"))
-    lost_ack_rate: float = float(os.getenv("LOST_ACK_RATE", "0.05"))
+    lost_ack_rate: float = float(os.getenv("LOST_ACK_RATE", "0"))
 
     # Condition and workload
     condition: str = os.getenv("CONDITION", "C1")

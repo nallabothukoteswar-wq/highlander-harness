@@ -87,14 +87,19 @@ After accepted call, with probability `lost_ack_rate`:
 ### Accepted Duplicate Effects (dup workload)
 Σ over business keys of max(0, accepted effects − 1)
 
-### Stale Overwrite (ordered workload)
-Accepted write with source_version < pre_version, or epoch < pre_max_epoch
+### Version Regression (ordered workload, all conditions)
+Accepted write with `source_version < pre_version`.
+
+### Epoch Authority Regression (lease conditions only)
+Accepted write with `epoch < pre_max_epoch`, where `pre_max_epoch` is the highest epoch already applied to the ownership stream. This is the authority-ordered endpoint even where no comparable source version exists.
 
 ### Rejected Attempts and Wasted CPU
 Count of rejected attempts and sum of prep_cpu_ns, normalized per 1,000 items
 
 ### Late Accept
 Accepted write with epoch e where committed_at > own.grants(stream, e+1).granted_at
+
+For after-grant C3/C3r trials, the successor's first sink write is delayed by 2 s. C3r sweep cells use the ordered workload and the after-grant trigger. This timing is a protocol target; the current runner does not yet implement the controlled delay.
 
 ### At-Risk Attempts
 Submissions victim makes after SIGCONT from captured batch (at_risk = true)

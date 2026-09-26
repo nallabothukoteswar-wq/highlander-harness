@@ -62,7 +62,7 @@ def test_clopper_pearson_upper_bound():
     # Test with all failures
     x = 30
     n = 30
-    upper_bound = beta.ppf(0.95, x + 1, n - x)
+    upper_bound = 1.0 if x == n else beta.ppf(0.95, x + 1, n - x)
     assert upper_bound == 1.0, "Upper bound should be 1.0 when all fail"
 
 
@@ -88,7 +88,7 @@ def test_percentile_bootstrap():
     # Compute bootstrap CI for p95
     bootstrap_p95 = np.array([
         np.percentile(rng.choice(data, size=len(data), replace=True), 95)
-        for _ in range n_bootstrap
+            for _ in range(n_bootstrap)
     ])
 
     ci_lower_p95 = np.percentile(bootstrap_p95, 2.5)

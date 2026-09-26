@@ -21,8 +21,8 @@ FROM (
 WHERE accepted_count > 1
 GROUP BY trial_id, condition;
 
--- Stale overwrites (ordered workload)
--- Accepted write with source_version < pre_version, or epoch < pre_max_epoch
+-- Keep the legacy combined view for existing tests; it must not be used for
+-- the paper's separate version and authority endpoints.
 CREATE OR REPLACE VIEW sink.stale_overwrites AS
 SELECT
     trial_id,
@@ -32,6 +32,24 @@ SELECT
     COUNT(*) AS total_accepted
 FROM sink.attempt_log
 WHERE outcome = 'accepted'
+GROUP BY trial_id, condition;
+
+-- Version regressions are defined for every condition with a source version.
+CREATE OR REPLACE VIEW sink.version_regressions AS
+SELECT trial_id, condition,
+       COUNT(*) FILTER (WHERE source_version < pre_version) AS regression_count,
+       COUNT(*) FILTER (WHERE at_risk AND source_version < pre_version) AS at_risk_regression_count
+FROM sink.attempt_log
+WHERE outcome = 'accepted'
+GROUP BY trial_id, condition;
+
+-- Authority regressions apply only to conditions with a lease epoch.
+CREATE OR REPLACE VIEW sink.epoch_regressions AS
+SELECT trial_id, condition,
+       COUNT(*) FILTER (WHERE epoch < pre_max_epoch) AS regression_count,
+       COUNT(*) FILTER (WHERE at_risk AND epoch < pre_max_epoch) AS at_risk_regression_count
+FROM sink.attempt_log
+WHERE outcome = 'accepted' AND condition IN ('C2', 'C2f', 'C3', 'C3r', 'C4')
 GROUP BY trial_id, condition;
 
 -- Rejected attempts and wasted CPU
@@ -101,6 +119,8 @@ GROUP BY trial_id, worker_id, incarnation;
 -- Grant read access on views to worker_rw
 GRANT SELECT ON sink.accepted_duplicates TO worker_rw;
 GRANT SELECT ON sink.stale_overwrites TO worker_rw;
+GRANT SELECT ON sink.version_regressions TO worker_rw;
+GRANT SELECT ON sink.epoch_regressions TO worker_rw;
 GRANT SELECT ON sink.rejected_metrics TO worker_rw;
 GRANT SELECT ON sink.late_accepts TO worker_rw;
 GRANT SELECT ON sink.at_risk_attempts TO worker_rw;

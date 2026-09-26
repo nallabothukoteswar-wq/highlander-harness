@@ -16,6 +16,7 @@ class SeriesD:
                 "condition": condition,
                 "workload": "dup",
                 "lost_ack_rate": 0.05,
+                "retry_delay_s": 0.05,
                 "series": "D"
             })
 

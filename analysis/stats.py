@@ -34,7 +34,7 @@ class StatisticsEngine:
 
         bootstrap_p95 = np.array([
             np.percentile(self.rng.choice(data, size=len(data), replace=True), 95)
-            for _ in range n_bootstrap
+            for _ in range(n_bootstrap)
         ])
 
         alpha = (1 - ci_level) / 2
@@ -67,6 +67,9 @@ class StatisticsEngine:
         """
         if n == 0:
             return 0.0
+
+        if x == n:
+            return 1.0
 
         return beta.ppf(confidence, x + 1, n - x)
 
