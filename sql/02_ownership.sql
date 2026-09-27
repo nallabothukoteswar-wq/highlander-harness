@@ -50,13 +50,15 @@ DECLARE
     v_epoch bigint;
 BEGIN
     WITH g AS (
-        UPDATE own.owner
-        SET holder = p_holder,
-            epoch = epoch + 1,
+        INSERT INTO own.owner (stream_id, holder, epoch, granted_at, expires_at)
+        VALUES (p_stream_id, p_holder, 1, clock_timestamp(),
+                clock_timestamp() + make_interval(secs => p_lease_secs))
+        ON CONFLICT (stream_id) DO UPDATE
+        SET holder = EXCLUDED.holder,
+            epoch = own.owner.epoch + 1,
             granted_at = clock_timestamp(),
             expires_at = clock_timestamp() + make_interval(secs => p_lease_secs)
-        WHERE stream_id = p_stream_id
-          AND expires_at <= clock_timestamp()
+        WHERE own.owner.expires_at <= clock_timestamp()
         RETURNING stream_id, epoch, holder, granted_at
     )
     INSERT INTO own.grants (stream_id, epoch, holder, granted_at)
@@ -65,7 +67,7 @@ BEGIN
 
     RETURN v_epoch;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, own;
 
 -- Renew ownership: succeeds only for current holder with correct epoch and unexpired lease
 -- Returns the new expires_at if successful, NULL otherwise
@@ -93,7 +95,7 @@ BEGIN
 
     RETURN v_expires_at;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, own;
 
 -- Grant execute on functions to worker_rw
 GRANT EXECUTE ON FUNCTION own.acquire(text, uuid, numeric) TO worker_rw;

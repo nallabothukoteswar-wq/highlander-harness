@@ -1,0 +1,68 @@
+name: PostgreSQL protocol and schedules
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:testpassword@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install protocol test dependencies
+        run: python -m pip install 'psycopg[binary]' pytest numpy scipy
+      - name: PostgreSQL version and protocol tests
+        run: |
+          psql "$DATABASE_URL" -Atc 'SHOW server_version'
+          python -m pytest tests -q
+      - name: Run scripted schedules against PostgreSQL
+        run: python -m analysis.postgres_schedules
+      - name: Run threaded PostgreSQL interleavings
+        run: python -m analysis.postgres_concurrency
+      - name: Upload scripted raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-scheduled-results
+          path: |
+            paper/supplementary/pg_trials.csv
+            paper/supplementary/pg_summary.csv
+            paper/supplementary/pg_concurrency_trials.csv
+            paper/supplementary/pg_concurrency_summary.csv
+            paper/supplementary/pg_acquisition_races.csv
+            paper/supplementary/experiment_config.json
+            docs/PG_VS_SQLITE.md
+          if-no-files-found: warn
+      - name: Tag the verified merge commit
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          if git ls-remote --exit-code --tags origin refs/tags/paper-v9 >/dev/null; then
+            echo 'paper-v9 already exists; leaving its original immutable target in place.'
+          else
+            git tag paper-v9 "$GITHUB_SHA"
+            git push origin refs/tags/paper-v9
+          fi

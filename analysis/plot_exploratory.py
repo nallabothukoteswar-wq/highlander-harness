@@ -1,4 +1,5 @@
 """Plot controlled after-grant acceptance from the raw SQLite trial CSV."""
+import argparse
 import csv
 import json
 from pathlib import Path
@@ -8,7 +9,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
-rows = list(csv.DictReader((ROOT / 'paper/supplementary/sqlite_trials.csv').open()))
+parser = argparse.ArgumentParser()
+parser.add_argument('--source', choices=('sqlite', 'pg'), default='sqlite')
+args = parser.parse_args()
+rows = list(csv.DictReader((ROOT / 'paper/supplementary' / ('pg_trials.csv' if args.source == 'pg' else 'sqlite_trials.csv')).open()))
 config = json.loads((ROOT / 'paper/supplementary/experiment_config.json').read_text())
 plt.rcParams.update({'font.family': 'serif', 'font.serif': ['DejaVu Serif']})
 fig, ax = plt.subplots(figsize=(4.7, 2.7))
@@ -22,7 +26,7 @@ for condition, marker in (('C3', 's'), ('C3r', 'o')):
                       / sum(int(r['at_risk_attempts']) for r in cell))
     ax.plot(config['resume_delays_s'], points, linestyle='None', marker=marker,
             markersize=7, label=condition)
-ax.set(xlabel='Former worker resume delay after grant (s)',
+ax.set(title=('PostgreSQL 16 scheduled SQL' if args.source == 'pg' else 'SQLite rule model'), xlabel='Former worker resume delay after grant (s)',
        ylabel='Late accepts / at-risk attempts', xticks=config['resume_delays_s'],
        ylim=(-.02, 1.05), yticks=[0, .25, .5, .75, 1])
 ax.axvline(config['first_write_delay_s'], color='#666666', linestyle=':',

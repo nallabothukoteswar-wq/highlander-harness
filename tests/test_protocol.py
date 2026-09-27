@@ -13,25 +13,11 @@ import threading
 from decimal import Decimal
 
 
-# Database connection parameters for tests
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
-DB_NAME = os.getenv("DB_NAME", "highlander_test")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "testpassword")
-
-
 @pytest.fixture(scope="module")
 def db_conn(setup_test_database):
     """Create a database connection for tests."""
-    conn = psycopg.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        autocommit=True
-    )
+    from tests.conftest import test_dsn
+    conn = psycopg.connect(test_dsn(), autocommit=True)
     yield conn
     conn.close()
 
@@ -57,10 +43,14 @@ def test_t1_concurrent_acquire(db_conn):
 
     # Concurrent acquire attempts
     results = []
+    barrier = threading.Barrier(2)
     def acquire(holder):
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT own.acquire(%s, %s, %s)", (stream_id, holder, lease_secs))
-            results.append(cur.fetchone()[0])
+        from tests.conftest import test_dsn
+        with psycopg.connect(test_dsn(), autocommit=True) as independent:
+            barrier.wait()
+            with independent.cursor() as cur:
+                cur.execute("SELECT own.acquire(%s, %s, %s)", (stream_id, holder, lease_secs))
+                results.append(cur.fetchone()[0])
 
     threads = [threading.Thread(target=acquire, args=(h,)) for h in [holder1, holder2]]
     for t in threads:
@@ -467,7 +457,7 @@ def test_t11_c4_replay_stable(db_conn):
         assert result2['outcome'] == 'replayed', f"Expected replayed, got {result2['outcome']}"
 
         # Response should be byte-identical
-        assert result2['committed_at'] == result1['committed_at'], "Response should be byte-identical"
+        assert result2['response'] == result1['response'], "Cached response should be byte-identical"
 
 
 def test_t12_attempt_log_count(db_conn):
@@ -543,18 +533,18 @@ def test_t13_stale_overwrite_view(db_conn):
             )
         """, (trial_id, uuid.uuid4(), stream_id, epoch1))
 
-    # Check stale_overwrite view
+    # Check the separate version-regression view
     with db_conn.cursor() as cur:
-        cur.execute("SELECT * FROM sink.stale_overwrites WHERE trial_id = %s", (trial_id,))
+        cur.execute("SELECT regression_count FROM sink.version_regressions WHERE trial_id = %s", (trial_id,))
         result = cur.fetchone()
-        assert result is not None, "stale_overwrite view should have entry"
-        assert result[1] == 1, f"Expected 1 stale overwrite, got {result[1]}"
+        assert result is not None, "version_regressions view should have entry"
+        assert result[0] == 1, f"Expected 1 version regression, got {result[0]}"
 
 
 def test_t14_skip_locked_redelivery(db_conn):
     """T14: the SKIP LOCKED claim re-delivers after V."""
     trial_id = "test_trial"
-    worker_id = "worker-0"
+    worker_id = uuid.uuid4()
     visibility_timeout = 1
 
     # Insert items
@@ -570,6 +560,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))
@@ -590,6 +581,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))
@@ -606,6 +598,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))

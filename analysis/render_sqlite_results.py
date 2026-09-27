@@ -52,14 +52,15 @@ def replay(rows, condition):
                 mismatch=f'{total(group, "replay_mismatch"):,}')
 
 
-def generate(rows, config):
+def generate(rows, config, source="sqlite"):
     for condition in CONDITIONS:
         assert len(cell(rows, 'ordered_pause', condition)) == config['ordered_runs_per_condition']
         if condition != 'C1v':
             assert len(cell(rows, 'duplicate_pause', condition)) == config['duplicate_runs_per_condition']
     for condition in ('C2f', 'C3', 'C4'):
         assert len(cell(rows, 'lost_ack', condition)) == config['replay_runs_per_condition']
-    table = [r'\begin{table*}[!t]\caption{Scripted SQLite interleaving outcomes. Counts reflect the specified schedule and sink rules, not failure-rate estimates.}\label{tab:results}',
+    title = 'PostgreSQL 16' if source == 'pg' else 'SQLite'
+    table = [rf'\begin{{table*}}[!t]\caption{{Scripted {title} interleaving outcomes. Counts reflect the specified schedule and sink rules, not failure-rate estimates.}}\label{{tab:results}}',
              r'\centering\footnotesize\setlength{\tabcolsep}{6pt}',
              r'\begin{tabular}{lccccccc}\toprule',
              r'Condition & $n_D$ & $n_O$ & Duplicates & Version reg. & Epoch reg. & Late & Rejected$_O$\\\midrule']
@@ -95,10 +96,56 @@ def generate(rows, config):
         'ObsFirstWriteS': config['first_write_delay_s'],
         'ObsOrderedRemoteLate': total(cell(rows, 'ordered_pause', 'C3r'), 'late_accept'),
         'ObsAfterRemoteBefore': total(cell(rows, 'after_grant', 'C3r', 0), 'late_accept'),
+        'ObsOrderedCTwoEpoch': total(cell(rows, 'ordered_pause', 'C2'), 'epoch_regression'),
+        'ObsOrderedCOneVersion': total(cell(rows, 'ordered_pause', 'C1'), 'version_regression'),
+        'ObsRawRuns': len(rows),
+        'ObsReplayRetries': total(cell(rows, 'lost_ack', 'C2f'), 'lost_ack'),
     }
     (OUT / 'study_values.tex').write_text(''.join('\\newcommand{\\' + key + '}{' + str(value) + '}\n'
                                                  for key, value in macros.items()))
     return macros
+
+
+def generate_concurrency():
+    """Derive the entire threaded-results table from PostgreSQL trial CSVs."""
+    trials = read_csv(DATA / 'pg_concurrency_trials.csv')
+    races = read_csv(DATA / 'pg_acquisition_races.csv')
+    assert len(races) == 1000
+    assert all(int(r['winners']) == int(r['grants']) == 1 for r in races)
+    conditions = ('C2f', 'C3', 'C4', 'C3r')
+    table = [r'\begin{table}[t]\caption{Threaded PostgreSQL interleavings; accepted former-epoch effects and late accepts are counted from SQL logs.}\label{tab:concurrency}',
+             r'\centering\footnotesize', r'\begin{tabular}{lrrr}\toprule',
+             r'Condition & Runs & Former accepted / attempts & Late accepts\\\midrule']
+    for condition in conditions:
+        group = [r for r in trials if r['condition'] == condition]
+        assert len(group) == 30 and all(int(r['former_attempts']) == 20 for r in group)
+        accepted = total(group, 'former_accepted')
+        attempts = total(group, 'former_attempts')
+        late = total(group, 'late_accept')
+        assert total(group, 'epoch_regression') == 0
+        table.append(f'{condition} & {len(group)} & {accepted}/{attempts} & {late}' + r'\\')
+    table[-1] = table[-1][:-2] + r'\\\bottomrule'
+    table += [r'\end{tabular}', r'\end{table}']
+    (OUT / 'concurrency_table.tex').write_text('\n'.join(table) + '\n')
+    with (OUT / 'study_values.tex').open('a') as stream:
+        for key, value in (('ObsThreadRuns', len(trials) // len(conditions)),
+                           ('ObsThreadKeys', int(trials[0]['former_attempts'])),
+                           ('ObsAcquisitionRounds', f'{len(races):,}'),
+                           ('ObsAcquisitionWinners', f'{sum(int(r["winners"]) for r in races):,}'),
+                           ('ObsThreadRemoteLate', total([r for r in trials if r['condition'] == 'C3r'], 'late_accept'))):
+            stream.write('\\newcommand{\\' + key + '}{' + str(value) + '}\n')
+    audit = ['# Threaded PostgreSQL result audit', '',
+             'Derived from `paper/supplementary/pg_concurrency_trials.csv` and '
+             '`pg_acquisition_races.csv`; the SQL runner wrote every raw row.', '',
+             '| Condition | Runs | Former attempts | Former accepted | Late accepts |',
+             '| --- | ---: | ---: | ---: | ---: |']
+    for condition in conditions:
+        group = [r for r in trials if r['condition'] == condition]
+        audit.append(f'| {condition} | {len(group)} | {total(group, "former_attempts")} | '
+                     f'{total(group, "former_accepted")} | {total(group, "late_accept")} |')
+    audit += ['', f'Acquisition races: {len(races):,}; rounds with exactly one winner '
+              f'and one grant: {sum(int(r["winners"]) == int(r["grants"]) == 1 for r in races):,}.', '']
+    (ROOT / 'docs/PG_CONCURRENCY_AUDIT.md').write_text('\n'.join(audit))
 
 
 def audit(old_rows, new_rows, old_config, new_config):
@@ -184,12 +231,15 @@ def audit_v8(old_rows, new_rows, old_config, new_config, old_ref):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--source', choices=('sqlite', 'pg'), default='sqlite')
     parser.add_argument('--old-ref', default=None, help='Git commit containing the previous public raw CSV')
     parser.add_argument('--v8-ref', default=None, help='Git commit containing v7 raw CSV and schedule inputs')
     args = parser.parse_args()
-    rows = read_csv(DATA / 'sqlite_trials.csv')
+    rows = read_csv(DATA / ('pg_trials.csv' if args.source == 'pg' else 'sqlite_trials.csv'))
     config = json.loads((DATA / 'experiment_config.json').read_text())
-    generate(rows, config)
+    generate(rows, config, args.source)
+    if args.source == 'pg':
+        generate_concurrency()
     if args.old_ref:
         old_text = subprocess.check_output(['git', 'show', f'{args.old_ref}:paper/supplementary/sqlite_trials.csv'], cwd=ROOT, text=True)
         old_rows = list(csv.DictReader(StringIO(old_text)))

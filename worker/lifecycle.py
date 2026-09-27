@@ -22,12 +22,12 @@ class WorkerState(Enum):
 class LifecycleManager:
     """Manages worker lifecycle state transitions."""
 
-    def __init__(self, conn: psycopg.Connection, config):
+    def __init__(self, conn: psycopg.Connection, config, incarnation: uuid.UUID):
         self.conn = conn
         self.config = config
         self.trial_id = config.trial_id
         self.worker_id = config.worker_id
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
         self.state = WorkerState.STANDBY
         self.transition_queue = []
 

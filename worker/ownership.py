@@ -10,10 +10,10 @@ import psycopg
 class OwnershipManager:
     """Manages ownership lease acquisition and renewal."""
 
-    def __init__(self, conn: psycopg.Connection, config):
+    def __init__(self, conn: psycopg.Connection, config, incarnation: uuid.UUID):
         self.conn = conn
         self.config = config
-        self.incarnation: uuid.UUID = uuid.uuid4()
+        self.incarnation: uuid.UUID = incarnation
         self.stream_id: str = config.stream_id
         self.lease_secs: float = config.lease_secs
         self.current_epoch: Optional[int] = None

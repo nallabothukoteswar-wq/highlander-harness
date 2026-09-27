@@ -14,5 +14,7 @@
     1,
     5
   ],
-  "sink": "SQLite scheduled rule model; no PostgreSQL or Kubernetes execution"
+  "sink": "PostgreSQL 16 scheduled SQL sink functions and attempt logs; no Kubernetes execution",
+  "postgresql_version": "16.15 (Debian 16.15-1.pgdg13+2)",
+  "postgresql_connection_route": "GitHub Actions postgres:16 service"
 }

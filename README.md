@@ -114,3 +114,7 @@ Apache-2.0 - see LICENSE file
 ## Citation
 
 If you use this software, please cite it as described in CITATION.cff.
+
+## Measured PostgreSQL scheduled results
+
+The IEEE manuscript and primary raw SQL schedules are in `paper/`. The PostgreSQL 16.15 CI run completed 343 scheduled rows and 53 passing tests; it compares to the SQLite rule model with zero per-cell metric mismatches. Regenerate results with `python3 -m analysis.render_sqlite_results --source pg` and `python3 -m analysis.plot_exploratory --source pg`, then compile `paper/manuscript.tex`. The CI run is https://github.com/nallabothukoteswar-wq/highlander-harness/actions/runs/36291161498 . This experiment does not measure Kubernetes downtime, cost, or throughput.

@@ -10,14 +10,14 @@ import psycopg
 class SinkManager:
     """Manages sink operations."""
 
-    def __init__(self, conn: psycopg.Connection, rsink_conn: Optional[psycopg.Connection], config):
+    def __init__(self, conn: psycopg.Connection, rsink_conn: Optional[psycopg.Connection], config, incarnation: uuid.UUID):
         self.conn = conn
         self.rsink_conn = rsink_conn
         self.config = config
         self.trial_id = config.trial_id
         self.condition = config.condition
         self.worker_id = config.worker_id
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
         self.stream_id = config.stream_id
 
     def _get_sink_function(self) -> str:
