@@ -21,18 +21,7 @@ FROM (
 WHERE accepted_count > 1
 GROUP BY trial_id, condition;
 
--- Keep the legacy combined view for existing tests; it must not be used for
--- the paper's separate version and authority endpoints.
-CREATE OR REPLACE VIEW sink.stale_overwrites AS
-SELECT
-    trial_id,
-    condition,
-    COUNT(*) FILTER (WHERE source_version < pre_version OR epoch < pre_max_epoch) AS stale_count,
-    COUNT(*) FILTER (WHERE at_risk = true AND (source_version < pre_version OR epoch < pre_max_epoch)) AS at_risk_stale_count,
-    COUNT(*) AS total_accepted
-FROM sink.attempt_log
-WHERE outcome = 'accepted'
-GROUP BY trial_id, condition;
+DROP VIEW IF EXISTS sink.stale_overwrites;
 
 -- Version regressions are defined for every condition with a source version.
 CREATE OR REPLACE VIEW sink.version_regressions AS
@@ -50,6 +39,20 @@ SELECT trial_id, condition,
        COUNT(*) FILTER (WHERE at_risk AND epoch < pre_max_epoch) AS at_risk_regression_count
 FROM sink.attempt_log
 WHERE outcome = 'accepted' AND condition IN ('C2', 'C2f', 'C3', 'C3r', 'C4')
+GROUP BY trial_id, condition;
+
+CREATE OR REPLACE VIEW rsink.version_regressions AS
+SELECT trial_id, condition,
+       COUNT(*) FILTER (WHERE source_version < pre_version) AS regression_count,
+       COUNT(*) FILTER (WHERE at_risk AND source_version < pre_version) AS at_risk_regression_count
+FROM rsink.attempt_log WHERE outcome = 'accepted'
+GROUP BY trial_id, condition;
+
+CREATE OR REPLACE VIEW rsink.epoch_regressions AS
+SELECT trial_id, condition,
+       COUNT(*) FILTER (WHERE epoch < pre_max_epoch) AS regression_count,
+       COUNT(*) FILTER (WHERE at_risk AND epoch < pre_max_epoch) AS at_risk_regression_count
+FROM rsink.attempt_log WHERE outcome = 'accepted'
 GROUP BY trial_id, condition;
 
 -- Rejected attempts and wasted CPU
@@ -118,7 +121,6 @@ GROUP BY trial_id, worker_id, incarnation;
 
 -- Grant read access on views to worker_rw
 GRANT SELECT ON sink.accepted_duplicates TO worker_rw;
-GRANT SELECT ON sink.stale_overwrites TO worker_rw;
 GRANT SELECT ON sink.version_regressions TO worker_rw;
 GRANT SELECT ON sink.epoch_regressions TO worker_rw;
 GRANT SELECT ON sink.rejected_metrics TO worker_rw;
@@ -126,5 +128,6 @@ GRANT SELECT ON sink.late_accepts TO worker_rw;
 GRANT SELECT ON sink.at_risk_attempts TO worker_rw;
 GRANT SELECT ON ctl.heartbeat_summary TO worker_rw;
 
--- Grant read access on remote views to rsink_rw
-GRANT SELECT ON rsink.late_accepts TO rsink_rw;
+-- Analysis uses the administrator role. No own.grants-backed view is granted
+-- to the restricted remote writer.
+REVOKE ALL ON rsink.late_accepts FROM PUBLIC, rsink_rw;

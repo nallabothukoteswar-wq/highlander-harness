@@ -1,6 +1,26 @@
 -- Sink functions for all conditions
 -- Each function is a single autocommit call that logs exactly one attempt_log row
 
+-- Lock the feed-wide metric row, return its pre-write value, then advance it.
+-- It records applied authority and is independent of the ownership fence.
+CREATE OR REPLACE FUNCTION sink.advance_epoch(p_trial_id text, p_stream_id text,
+                                              p_epoch bigint) RETURNS bigint AS $$
+DECLARE
+    v_previous bigint;
+BEGIN
+    IF p_epoch IS NULL THEN
+        RETURN NULL;
+    END IF;
+    INSERT INTO sink.max_epoch (trial_id, stream_id, max_epoch)
+    VALUES (p_trial_id, p_stream_id, 0) ON CONFLICT DO NOTHING;
+    SELECT max_epoch INTO v_previous FROM sink.max_epoch
+    WHERE trial_id = p_trial_id AND stream_id = p_stream_id FOR UPDATE;
+    UPDATE sink.max_epoch SET max_epoch = GREATEST(max_epoch, p_epoch)
+    WHERE trial_id = p_trial_id AND stream_id = p_stream_id;
+    RETURN v_previous;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink;
+
 -- Plain sink (C1, C2): apply unconditionally
 CREATE OR REPLACE FUNCTION sink.sink_plain(
     p_trial_id text,
@@ -18,6 +38,7 @@ CREATE OR REPLACE FUNCTION sink.sink_plain(
 ) RETURNS jsonb AS $$
 DECLARE
     v_pre_version bigint;
+    v_pre_max_epoch bigint;
     v_committed_at timestamptz;
 BEGIN
     -- Lock state row and read pre_version
@@ -36,6 +57,10 @@ BEGIN
     INSERT INTO sink.effects (trial_id, business_key, op_key, version, committed_at)
     VALUES (p_trial_id, p_business_key, p_op_key, p_source_version, clock_timestamp());
 
+    UPDATE sink.state SET version = p_source_version
+    WHERE trial_id = p_trial_id AND target_key = p_target_key;
+    v_pre_max_epoch := sink.advance_epoch(p_trial_id, p_stream_id, p_epoch);
+
     v_committed_at := clock_timestamp();
 
     -- Log attempt
@@ -46,12 +71,12 @@ BEGIN
     ) VALUES (
         p_trial_id, p_condition, p_worker_id, p_incarnation, p_stream_id, p_epoch,
         p_op_key, p_business_key, p_target_key, p_source_version, p_prep_cpu_ns, p_at_risk,
-        'accepted', NULL, v_pre_version, NULL, v_committed_at
+        'accepted', NULL, v_pre_version, v_pre_max_epoch, v_committed_at
     );
 
     RETURN jsonb_build_object('outcome', 'accepted', 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Unique sink (C1u): plain with UNIQUE(op_key) constraint
 CREATE OR REPLACE FUNCTION sink.sink_unique(
@@ -70,6 +95,7 @@ CREATE OR REPLACE FUNCTION sink.sink_unique(
 ) RETURNS jsonb AS $$
 DECLARE
     v_pre_version bigint;
+    v_pre_max_epoch bigint;
     v_committed_at timestamptz;
     v_outcome text;
     v_reason text;
@@ -86,10 +112,10 @@ BEGIN
         VALUES (p_trial_id, p_target_key, 0);
     END IF;
 
-    -- Try to insert with unique constraint
+    -- Reserve the operation key atomically; plain conditions do not use this ledger.
     BEGIN
-        INSERT INTO sink.effects (trial_id, business_key, op_key, version, committed_at)
-        VALUES (p_trial_id, p_business_key, p_op_key, p_source_version, clock_timestamp())
+        INSERT INTO sink.responses (trial_id, op_key, response)
+        VALUES (p_trial_id, p_op_key, jsonb_build_object('accepted', true))
         ON CONFLICT (trial_id, op_key) DO NOTHING;
 
         IF NOT FOUND THEN
@@ -97,9 +123,14 @@ BEGIN
             v_reason := 'dup_key';
             v_committed_at := clock_timestamp();
         ELSE
+            INSERT INTO sink.effects (trial_id, business_key, op_key, version)
+            VALUES (p_trial_id, p_business_key, p_op_key, p_source_version);
             v_outcome := 'accepted';
             v_reason := NULL;
             v_committed_at := clock_timestamp();
+            UPDATE sink.state SET version = p_source_version
+            WHERE trial_id = p_trial_id AND target_key = p_target_key;
+            v_pre_max_epoch := sink.advance_epoch(p_trial_id, p_stream_id, p_epoch);
         END IF;
     EXCEPTION WHEN unique_violation THEN
         v_outcome := 'rejected';
@@ -115,12 +146,12 @@ BEGIN
     ) VALUES (
         p_trial_id, p_condition, p_worker_id, p_incarnation, p_stream_id, p_epoch,
         p_op_key, p_business_key, p_target_key, p_source_version, p_prep_cpu_ns, p_at_risk,
-        v_outcome, v_reason, v_pre_version, NULL, v_committed_at
+        v_outcome, v_reason, v_pre_version, v_pre_max_epoch, v_committed_at
     );
 
     RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Version sink (C1v, ordered only): reject if version not newer
 CREATE OR REPLACE FUNCTION sink.sink_version(
@@ -139,7 +170,7 @@ CREATE OR REPLACE FUNCTION sink.sink_version(
 ) RETURNS jsonb AS $$
 DECLARE
     v_pre_version bigint;
-    v_updated boolean;
+    v_updated integer;
     v_committed_at timestamptz;
     v_outcome text;
     v_reason text;
@@ -188,7 +219,7 @@ BEGIN
 
     RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Fenced sink (C2f): check ownership fence before applying
 CREATE OR REPLACE FUNCTION sink.sink_fenced(
@@ -210,6 +241,7 @@ DECLARE
     v_owner_epoch bigint;
     v_expires_at timestamptz;
     v_pre_version bigint;
+    v_pre_max_epoch bigint;
     v_committed_at timestamptz;
     v_outcome text;
     v_reason text;
@@ -249,6 +281,10 @@ BEGIN
         INSERT INTO sink.effects (trial_id, business_key, op_key, version, committed_at)
         VALUES (p_trial_id, p_business_key, p_op_key, p_source_version, clock_timestamp());
 
+        UPDATE sink.state SET version = p_source_version
+        WHERE trial_id = p_trial_id AND target_key = p_target_key;
+        v_pre_max_epoch := sink.advance_epoch(p_trial_id, p_stream_id, p_epoch);
+
         v_outcome := 'accepted';
         v_reason := NULL;
         v_committed_at := clock_timestamp();
@@ -262,12 +298,12 @@ BEGIN
     ) VALUES (
         p_trial_id, p_condition, p_worker_id, p_incarnation, p_stream_id, p_epoch,
         p_op_key, p_business_key, p_target_key, p_source_version, p_prep_cpu_ns, p_at_risk,
-        v_outcome, v_reason, v_pre_version, v_owner_epoch, v_committed_at
+        v_outcome, v_reason, v_pre_version, v_pre_max_epoch, v_committed_at
     );
 
     RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Fenced unique sink (C3): fence with unique constraint
 CREATE OR REPLACE FUNCTION sink.sink_fenced_unique(
@@ -332,26 +368,22 @@ BEGIN
             VALUES (p_trial_id, p_target_key, 0);
         END IF;
 
-        -- Track max epoch
-        INSERT INTO sink.max_epoch (trial_id, stream_id, max_epoch)
-        VALUES (p_trial_id, p_stream_id, p_epoch)
-        ON CONFLICT (trial_id, stream_id) DO UPDATE
-        SET max_epoch = GREATEST(sink.max_epoch.max_epoch, p_epoch);
-
-        SELECT max_epoch INTO v_pre_max_epoch
-        FROM sink.max_epoch
-        WHERE trial_id = p_trial_id AND stream_id = p_stream_id;
+        v_pre_max_epoch := sink.advance_epoch(p_trial_id, p_stream_id, p_epoch);
 
         -- Try to insert with unique constraint
         BEGIN
-            INSERT INTO sink.effects (trial_id, business_key, op_key, version, committed_at)
-            VALUES (p_trial_id, p_business_key, p_op_key, p_source_version, clock_timestamp())
+            INSERT INTO sink.responses (trial_id, op_key, response)
+            VALUES (p_trial_id, p_op_key, jsonb_build_object('accepted', true))
             ON CONFLICT (trial_id, op_key) DO NOTHING;
 
             IF NOT FOUND THEN
                 v_outcome := 'rejected';
                 v_reason := 'dup_key';
             ELSE
+                INSERT INTO sink.effects (trial_id, business_key, op_key, version)
+                VALUES (p_trial_id, p_business_key, p_op_key, p_source_version);
+                UPDATE sink.state SET version = p_source_version
+                WHERE trial_id = p_trial_id AND target_key = p_target_key;
                 v_outcome := 'accepted';
                 v_reason := NULL;
             END IF;
@@ -376,7 +408,7 @@ BEGIN
 
     RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Fenced unique cached sink (C4): fence with unique constraint and response caching
 CREATE OR REPLACE FUNCTION sink.sink_fenced_unique_cached(
@@ -457,28 +489,23 @@ BEGIN
                 VALUES (p_trial_id, p_target_key, 0);
             END IF;
 
-            -- Track max epoch
-            INSERT INTO sink.max_epoch (trial_id, stream_id, max_epoch)
-            VALUES (p_trial_id, p_stream_id, p_epoch)
-            ON CONFLICT (trial_id, stream_id) DO UPDATE
-            SET max_epoch = GREATEST(sink.max_epoch.max_epoch, p_epoch);
-
-            SELECT max_epoch INTO v_pre_max_epoch
-            FROM sink.max_epoch
-            WHERE trial_id = p_trial_id AND stream_id = p_stream_id;
+            v_pre_max_epoch := sink.advance_epoch(p_trial_id, p_stream_id, p_epoch);
 
             -- Insert effect
             INSERT INTO sink.effects (trial_id, business_key, op_key, version, committed_at)
             VALUES (p_trial_id, p_business_key, p_op_key, p_source_version, clock_timestamp())
             RETURNING effect_id INTO v_effect_id;
 
+            UPDATE sink.state SET version = p_source_version
+            WHERE trial_id = p_trial_id AND target_key = p_target_key;
+
             v_committed_at := clock_timestamp();
 
             -- Cache response
+            v_cached_response := jsonb_build_object('effect_id', v_effect_id,
+                                  'epoch', p_epoch, 'committed_at', v_committed_at);
             INSERT INTO sink.responses (trial_id, op_key, response, committed_at)
-            VALUES (p_trial_id, p_op_key,
-                    jsonb_build_object('effect_id', v_effect_id, 'epoch', p_epoch, 'committed_at', v_committed_at),
-                    v_committed_at);
+            VALUES (p_trial_id, p_op_key, v_cached_response, v_committed_at);
 
             v_outcome := 'accepted';
             v_reason := NULL;
@@ -496,9 +523,10 @@ BEGIN
         v_outcome, v_reason, v_pre_version, v_pre_max_epoch, v_committed_at
     );
 
-    RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
+    RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason,
+                              'response', v_cached_response);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, sink, own;
 
 -- Remote sink (C3r): remote fence with unique constraint
 CREATE OR REPLACE FUNCTION rsink.sink_remote(
@@ -518,6 +546,7 @@ CREATE OR REPLACE FUNCTION rsink.sink_remote(
 DECLARE
     v_e_current bigint;
     v_pre_version bigint;
+    v_pre_max_epoch bigint;
     v_committed_at timestamptz;
     v_outcome text;
     v_reason text;
@@ -533,6 +562,7 @@ BEGIN
         INSERT INTO rsink.fence (trial_id, stream_id, e_current)
         VALUES (p_trial_id, p_stream_id, 0);
     END IF;
+    v_pre_max_epoch := v_e_current;
 
     -- Check epoch
     IF p_epoch < v_e_current THEN
@@ -546,7 +576,6 @@ BEGIN
             UPDATE rsink.fence
             SET e_current = p_epoch, advanced_at = clock_timestamp()
             WHERE trial_id = p_trial_id AND stream_id = p_stream_id;
-            v_e_current := p_epoch;
         END IF;
 
         -- Lock state and read pre_version
@@ -571,6 +600,8 @@ BEGIN
                 v_outcome := 'rejected';
                 v_reason := 'dup_key';
             ELSE
+                UPDATE rsink.state SET version = p_source_version
+                WHERE trial_id = p_trial_id AND target_key = p_target_key;
                 v_outcome := 'accepted';
                 v_reason := NULL;
             END IF;
@@ -590,12 +621,12 @@ BEGIN
     ) VALUES (
         p_trial_id, p_condition, p_worker_id, p_incarnation, p_stream_id, p_epoch,
         p_op_key, p_business_key, p_target_key, p_source_version, p_prep_cpu_ns, p_at_risk,
-        v_outcome, v_reason, v_pre_version, v_e_current, v_committed_at
+        v_outcome, v_reason, v_pre_version, v_pre_max_epoch, v_committed_at
     );
 
     RETURN jsonb_build_object('outcome', v_outcome, 'reason', v_reason, 'committed_at', v_committed_at);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, rsink;
 
 -- Grant execute on sink functions to worker_rw
 GRANT EXECUTE ON FUNCTION sink.sink_plain(text, text, text, uuid, text, bigint, text, text, text, bigint, bigint, boolean) TO worker_rw;

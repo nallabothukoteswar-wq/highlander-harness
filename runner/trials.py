@@ -199,13 +199,10 @@ class TrialRunner:
         conn.execute("TRUNCATE TABLE ctl.incarnations, ctl.heartbeats, ctl.transitions, ctl.fault_plan, ctl.fault_events, ctl.fault_markers, ctl.kill_markers CASCADE")
 
         # Set up unique constraint if needed
+        conn.execute("ALTER TABLE sink.effects DROP CONSTRAINT IF EXISTS effects_op_key_unique")
         if condition in ["C1u", "C3", "C3r", "C4"]:
             conn.execute("""
-                ALTER TABLE sink.effects ADD CONSTRAINT IF NOT EXISTS effects_op_key_unique UNIQUE (trial_id, op_key)
-            """)
-        else:
-            conn.execute("""
-                ALTER TABLE sink.effects DROP CONSTRAINT IF EXISTS effects_op_key_unique
+                ALTER TABLE sink.effects ADD CONSTRAINT effects_op_key_unique UNIQUE (trial_id, op_key)
             """)
 
         # Set up response cache if needed

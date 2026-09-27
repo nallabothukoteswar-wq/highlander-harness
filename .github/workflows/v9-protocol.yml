@@ -1,0 +1,36 @@
+name: PostgreSQL protocol and schedules
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:testpassword@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install protocol test dependencies
+        run: python -m pip install 'psycopg[binary]' pytest numpy scipy
+      - name: PostgreSQL version and protocol tests
+        run: |
+          psql "$DATABASE_URL" -Atc 'SHOW server_version'
+          python -m pytest tests/test_protocol.py tests/test_v9_protocol.py -q

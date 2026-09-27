@@ -546,12 +546,12 @@ def test_t13_stale_overwrite_view(db_conn):
             )
         """, (trial_id, uuid.uuid4(), stream_id, epoch1))
 
-    # Check stale_overwrite view
+    # Check the separate version-regression view
     with db_conn.cursor() as cur:
-        cur.execute("SELECT * FROM sink.stale_overwrites WHERE trial_id = %s", (trial_id,))
+        cur.execute("SELECT regression_count FROM sink.version_regressions WHERE trial_id = %s", (trial_id,))
         result = cur.fetchone()
-        assert result is not None, "stale_overwrite view should have entry"
-        assert result[2] == 1, f"Expected 1 stale overwrite, got {result[2]}"
+        assert result is not None, "version_regressions view should have entry"
+        assert result[0] == 1, f"Expected 1 version regression, got {result[0]}"
 
 
 def test_t14_skip_locked_redelivery(db_conn):
