@@ -34,3 +34,16 @@ jobs:
         run: |
           psql "$DATABASE_URL" -Atc 'SHOW server_version'
           python -m pytest tests -q
+      - name: Run scripted schedules against PostgreSQL
+        run: python -m analysis.postgres_schedules
+      - name: Upload scripted raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-scheduled-results
+          path: |
+            paper/supplementary/pg_trials.csv
+            paper/supplementary/pg_summary.csv
+            paper/supplementary/experiment_config.json
+            docs/PG_VS_SQLITE.md
+          if-no-files-found: warn

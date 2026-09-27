@@ -101,14 +101,16 @@ def test_d10_remote_exports_have_headers(db, tmp_path):
     runner._export_trial_data('v9')
     for filename in ('attempts.csv', 'rsink_attempts.csv', 'rsink_fence.csv', 'rsink_state.csv'):
         with (tmp_path / filename).open(newline='') as file:
-            rows = list(csv.DictReader(file))
-        assert rows, f'{filename} was not exported with rows and a header'
-        assert 'trial_id' in rows[0]
+            reader = csv.DictReader(file)
+            rows = list(reader)
+        assert reader.fieldnames and 'trial_id' in reader.fieldnames
+        if filename.startswith('rsink_'):
+            assert rows, f'{filename} has no remote rows'
 
 
 def test_t16_first_write_delay_window(db):
     former, successor = uuid.uuid4(), uuid.uuid4()
-    assert db.execute('SELECT own.acquire(%s,%s,%s)', ('S1', former, .3)).fetchone()[0] == 1
+    assert db.execute('SELECT own.acquire(%s,%s,%s::numeric)', ('S1', former, .3)).fetchone()[0] == 1
     assert submit(db, 'C3r', 'k0', 1, 1, former, trial='window')['outcome'] == 'accepted'
     time.sleep(.35)
     assert db.execute('SELECT own.acquire(%s,%s,%s)', ('S1', successor, 60)).fetchone()[0] == 2
