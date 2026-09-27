@@ -25,7 +25,7 @@ CONDITIONS = ('C2f', 'C3', 'C4', 'C3r')
 
 def write_csv(path, rows, fields):
     with path.open('w', newline='') as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
 

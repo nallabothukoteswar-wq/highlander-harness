@@ -4,6 +4,7 @@ These tests verify the SQL semantics without using mocks.
 They require a real PostgreSQL 16 database.
 """
 
+import os
 import pytest
 import psycopg
 import uuid

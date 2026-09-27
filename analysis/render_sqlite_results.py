@@ -106,6 +106,48 @@ def generate(rows, config, source="sqlite"):
     return macros
 
 
+def generate_concurrency():
+    """Derive the entire threaded-results table from PostgreSQL trial CSVs."""
+    trials = read_csv(DATA / 'pg_concurrency_trials.csv')
+    races = read_csv(DATA / 'pg_acquisition_races.csv')
+    assert len(races) == 1000
+    assert all(int(r['winners']) == int(r['grants']) == 1 for r in races)
+    conditions = ('C2f', 'C3', 'C4', 'C3r')
+    table = [r'\begin{table}[t]\caption{Threaded PostgreSQL interleavings; accepted former-epoch effects and late accepts are counted from SQL logs.}\label{tab:concurrency}',
+             r'\centering\footnotesize', r'\begin{tabular}{lrrr}\toprule',
+             r'Condition & Runs & Former accepted / attempts & Late accepts\\\midrule']
+    for condition in conditions:
+        group = [r for r in trials if r['condition'] == condition]
+        assert len(group) == 30 and all(int(r['former_attempts']) == 20 for r in group)
+        accepted = total(group, 'former_accepted')
+        attempts = total(group, 'former_attempts')
+        late = total(group, 'late_accept')
+        assert total(group, 'epoch_regression') == 0
+        table.append(f'{condition} & {len(group)} & {accepted}/{attempts} & {late}' + r'\\')
+    table[-1] = table[-1][:-2] + r'\\\bottomrule'
+    table += [r'\end{tabular}', r'\end{table}']
+    (OUT / 'concurrency_table.tex').write_text('\n'.join(table) + '\n')
+    with (OUT / 'study_values.tex').open('a') as stream:
+        for key, value in (('ObsThreadRuns', len(trials) // len(conditions)),
+                           ('ObsThreadKeys', int(trials[0]['former_attempts'])),
+                           ('ObsAcquisitionRounds', f'{len(races):,}'),
+                           ('ObsAcquisitionWinners', f'{sum(int(r["winners"]) for r in races):,}'),
+                           ('ObsThreadRemoteLate', total([r for r in trials if r['condition'] == 'C3r'], 'late_accept'))):
+            stream.write('\\newcommand{\\' + key + '}{' + str(value) + '}\n')
+    audit = ['# Threaded PostgreSQL result audit', '',
+             'Derived from `paper/supplementary/pg_concurrency_trials.csv` and '
+             '`pg_acquisition_races.csv`; the SQL runner wrote every raw row.', '',
+             '| Condition | Runs | Former attempts | Former accepted | Late accepts |',
+             '| --- | ---: | ---: | ---: | ---: |']
+    for condition in conditions:
+        group = [r for r in trials if r['condition'] == condition]
+        audit.append(f'| {condition} | {len(group)} | {total(group, "former_attempts")} | '
+                     f'{total(group, "former_accepted")} | {total(group, "late_accept")} |')
+    audit += ['', f'Acquisition races: {len(races):,}; rounds with exactly one winner '
+              f'and one grant: {sum(int(r["winners"]) == int(r["grants"]) == 1 for r in races):,}.', '']
+    (ROOT / 'docs/PG_CONCURRENCY_AUDIT.md').write_text('\n'.join(audit))
+
+
 def audit(old_rows, new_rows, old_config, new_config):
     lines = ['# v7 result-number audit', '',
              'The before values come from the publicly published v6 commit; the after values come from regenerated `sqlite_trials.csv`. Every table cell below was counted from those CSVs. N/A means the metric was not applicable. The schedules differ, so a change is a correction to the model, not a performance improvement.', '',
@@ -196,6 +238,8 @@ def main():
     rows = read_csv(DATA / ('pg_trials.csv' if args.source == 'pg' else 'sqlite_trials.csv'))
     config = json.loads((DATA / 'experiment_config.json').read_text())
     generate(rows, config, args.source)
+    if args.source == 'pg':
+        generate_concurrency()
     if args.old_ref:
         old_text = subprocess.check_output(['git', 'show', f'{args.old_ref}:paper/supplementary/sqlite_trials.csv'], cwd=ROOT, text=True)
         old_rows = list(csv.DictReader(StringIO(old_text)))

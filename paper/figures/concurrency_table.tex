@@ -1,0 +1,10 @@
+\begin{table}[t]\caption{Threaded PostgreSQL interleavings; accepted former-epoch effects and late accepts are counted from SQL logs.}\label{tab:concurrency}
+\centering\footnotesize
+\begin{tabular}{lrrr}\toprule
+Condition & Runs & Former accepted / attempts & Late accepts\\\midrule
+C2f & 30 & 0/600 & 0\\
+C3 & 30 & 0/600 & 0\\
+C4 & 30 & 0/600 & 0\\
+C3r & 30 & 19/600 & 19\\\bottomrule
+\end{tabular}
+\end{table}
