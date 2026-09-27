@@ -1,6 +1,8 @@
 name: PostgreSQL protocol and schedules
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -36,6 +38,8 @@ jobs:
           python -m pytest tests -q
       - name: Run scripted schedules against PostgreSQL
         run: python -m analysis.postgres_schedules
+      - name: Run threaded PostgreSQL interleavings
+        run: python -m analysis.postgres_concurrency
       - name: Upload scripted raw results
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,6 +48,9 @@ jobs:
           path: |
             paper/supplementary/pg_trials.csv
             paper/supplementary/pg_summary.csv
+            paper/supplementary/pg_concurrency_trials.csv
+            paper/supplementary/pg_concurrency_summary.csv
+            paper/supplementary/pg_acquisition_races.csv
             paper/supplementary/experiment_config.json
             docs/PG_VS_SQLITE.md
           if-no-files-found: warn
