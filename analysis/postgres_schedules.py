@@ -258,7 +258,9 @@ def compare(sqlite_rows, pg_rows):
                   'rejected_duplicate', 'replayed', 'accepted_duplicates', 'version_regression',
                   'epoch_regression', 'late_accept', 'lost_ack', 'duplicate_accepted',
                   'unresolved_ambiguous', 'replay_stable', 'replay_mismatch')
-    index = lambda rows: {(r['series'], r['condition'], int(r['trial']), str(r.get('delay_s') or '')): r for r in rows}
+    index = lambda rows: {(r['series'], r['condition'], int(r['trial']),
+                           str(r.get('delay_s') if r.get('delay_s') is not None else '')): r
+                          for r in rows}
     left, right = index(sqlite_rows), index(pg_rows)
     assert left.keys() == right.keys(), 'PostgreSQL and SQLite schedule cells differ'
     mismatches = []
