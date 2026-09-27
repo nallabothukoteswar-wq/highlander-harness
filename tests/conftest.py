@@ -6,24 +6,26 @@ import subprocess
 import os
 
 
+def test_dsn(database='highlander_test'):
+    """Use DATABASE_URL when present, otherwise the repository's DB_* settings."""
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    if os.getenv('DATABASE_URL'):
+        params = conninfo_to_dict(os.environ['DATABASE_URL'])
+        params['dbname'] = database
+        return make_conninfo(**params)
+    return make_conninfo(host=os.getenv('DB_HOST', 'localhost'),
+                         port=os.getenv('DB_PORT', '5432'), dbname=database,
+                         user=os.getenv('DB_USER', 'postgres'),
+                         password=os.getenv('DB_PASSWORD', 'testpassword'))
+
+
 @pytest.fixture(scope="session")
 def setup_test_database():
     """Set up the test database and run schema migrations."""
-    db_host = os.getenv("DB_HOST", "localhost")
-    db_port = int(os.getenv("DB_PORT", "5432"))
     db_name = "highlander_test"
-    db_user = os.getenv("DB_USER", "postgres")
-    db_password = os.getenv("DB_PASSWORD", "testpassword")
 
     # Connect to postgres database to create test database
-    conn = psycopg.connect(
-        host=db_host,
-        port=db_port,
-        dbname="postgres",
-        user=db_user,
-        password=db_password,
-        autocommit=True
-    )
+    conn = psycopg.connect(test_dsn('postgres'), autocommit=True)
 
     # Drop test database if it exists
     conn.execute(f"DROP DATABASE IF EXISTS {db_name}")
@@ -34,14 +36,7 @@ def setup_test_database():
     conn.close()
 
     # Connect to test database and run schema migrations
-    conn = psycopg.connect(
-        host=db_host,
-        port=db_port,
-        dbname=db_name,
-        user=db_user,
-        password=db_password,
-        autocommit=True
-    )
+    conn = psycopg.connect(test_dsn(db_name), autocommit=True)
 
     # Run SQL schema files in order
     sql_dir = os.path.join(os.path.dirname(__file__), '..', 'sql')
@@ -68,13 +63,6 @@ def setup_test_database():
     yield
 
     # Cleanup: drop test database
-    conn = psycopg.connect(
-        host=db_host,
-        port=db_port,
-        dbname="postgres",
-        user=db_user,
-        password=db_password,
-        autocommit=True
-    )
+    conn = psycopg.connect(test_dsn('postgres'), autocommit=True)
     conn.execute(f"DROP DATABASE IF EXISTS {db_name}")
     conn.close()

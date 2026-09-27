@@ -57,10 +57,13 @@ def test_t1_concurrent_acquire(db_conn):
 
     # Concurrent acquire attempts
     results = []
+    barrier = threading.Barrier(2)
     def acquire(holder):
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT own.acquire(%s, %s, %s)", (stream_id, holder, lease_secs))
-            results.append(cur.fetchone()[0])
+        with psycopg.connect(db_conn.info.dsn, autocommit=True) as independent:
+            barrier.wait()
+            with independent.cursor() as cur:
+                cur.execute("SELECT own.acquire(%s, %s, %s)", (stream_id, holder, lease_secs))
+                results.append(cur.fetchone()[0])
 
     threads = [threading.Thread(target=acquire, args=(h,)) for h in [holder1, holder2]]
     for t in threads:
@@ -467,7 +470,7 @@ def test_t11_c4_replay_stable(db_conn):
         assert result2['outcome'] == 'replayed', f"Expected replayed, got {result2['outcome']}"
 
         # Response should be byte-identical
-        assert result2['committed_at'] == result1['committed_at'], "Response should be byte-identical"
+        assert result2['response'] == result1['response'], "Cached response should be byte-identical"
 
 
 def test_t12_attempt_log_count(db_conn):
@@ -548,7 +551,7 @@ def test_t13_stale_overwrite_view(db_conn):
         cur.execute("SELECT * FROM sink.stale_overwrites WHERE trial_id = %s", (trial_id,))
         result = cur.fetchone()
         assert result is not None, "stale_overwrite view should have entry"
-        assert result[1] == 1, f"Expected 1 stale overwrite, got {result[1]}"
+        assert result[2] == 1, f"Expected 1 stale overwrite, got {result[2]}"
 
 
 def test_t14_skip_locked_redelivery(db_conn):
