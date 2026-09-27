@@ -4,6 +4,8 @@ Experiment harness for the paper "Workload-Aware Deployment Pattern Selection fo
 
 The seven-page IEEE conference manuscript source is in [`paper/manuscript.tex`](paper/manuscript.tex); its figures and references are in the same directory. The paper includes a scripted SQLite sink-rule study with [raw schedules, summary counts and scope notes](paper/supplementary/README.md). These counts are not failure-rate estimates. The planned Kubernetes/PostgreSQL campaign remains unrun.
 
+The [v8 change log](docs/REVISION_V8.md) and [v8 numeric audit](docs/V8_NUMBER_AUDIT.md) document the corrected after-grant batch schedule and its figure results.
+
 **Implementation status:** The runner, Series C after-grant delay, replay classification, and Series F/G service/load generation are incomplete. The commands below describe the intended interface and are not evidence that a full campaign succeeds. The analysis report entry point and several referenced files are still missing.
 
 Reproduce the limited SQLite mechanism study without a cluster:
