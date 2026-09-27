@@ -33,4 +33,4 @@ jobs:
       - name: PostgreSQL version and protocol tests
         run: |
           psql "$DATABASE_URL" -Atc 'SHOW server_version'
-          python -m pytest tests/test_protocol.py tests/test_v9_protocol.py -q
+          python -m pytest tests -q

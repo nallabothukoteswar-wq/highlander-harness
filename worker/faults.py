@@ -12,12 +12,12 @@ import psycopg
 class FaultManager:
     """Manages fault injection for workers."""
 
-    def __init__(self, conn: psycopg.Connection, config):
+    def __init__(self, conn: psycopg.Connection, config, incarnation: uuid.UUID):
         self.conn = conn
         self.config = config
         self.trial_id = config.trial_id
         self.worker_id = config.worker_id
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
         self.fault_armed = False
         self.captured_batch = None
         self.at_risk = False

@@ -11,14 +11,14 @@ import psycopg
 class WorkloadGenerator:
     """Generates work items for different workload types."""
 
-    def __init__(self, conn: psycopg.Connection, config):
+    def __init__(self, conn: psycopg.Connection, config, incarnation: uuid.UUID):
         self.conn = conn
         self.config = config
         self.trial_id = config.trial_id
         self.num_items = config.num_items
         self.workload = config.workload
         self.stream_id = config.stream_id
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
 
     def generate_and_populate(self):
         """Generate items and populate the work queue."""
@@ -86,10 +86,10 @@ class WorkloadGenerator:
 class ItemPreparer:
     """Prepares items before submission to sink."""
 
-    def __init__(self, config):
+    def __init__(self, config, incarnation: uuid.UUID):
         self.config = config
         self.prep_cpu_ms = config.prep_cpu_ms
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
 
     def prepare_batch(self, items: List[dict]) -> List[dict]:
         """Prepare a batch of items with synthetic CPU work.

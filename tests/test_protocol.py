@@ -59,7 +59,8 @@ def test_t1_concurrent_acquire(db_conn):
     results = []
     barrier = threading.Barrier(2)
     def acquire(holder):
-        with psycopg.connect(db_conn.info.dsn, autocommit=True) as independent:
+        from tests.conftest import test_dsn
+        with psycopg.connect(test_dsn(), autocommit=True) as independent:
             barrier.wait()
             with independent.cursor() as cur:
                 cur.execute("SELECT own.acquire(%s, %s, %s)", (stream_id, holder, lease_secs))
@@ -557,7 +558,7 @@ def test_t13_stale_overwrite_view(db_conn):
 def test_t14_skip_locked_redelivery(db_conn):
     """T14: the SKIP LOCKED claim re-delivers after V."""
     trial_id = "test_trial"
-    worker_id = "worker-0"
+    worker_id = uuid.uuid4()
     visibility_timeout = 1
 
     # Insert items
@@ -573,6 +574,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))
@@ -593,6 +595,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))
@@ -609,6 +612,7 @@ def test_t14_skip_locked_redelivery(db_conn):
         cur.execute("""
             SELECT item_id FROM src.items
             WHERE trial_id = %s AND done = false
+              AND (visible_at IS NULL OR visible_at <= clock_timestamp())
             FOR UPDATE SKIP LOCKED
             LIMIT 3
         """, (trial_id,))

@@ -1,5 +1,7 @@
 """Regression cases for the PostgreSQL implementation (requires PostgreSQL 16)."""
 import uuid
+import csv
+import time
 
 import psycopg
 import pytest
@@ -87,3 +89,31 @@ def test_d8_remote_metric_views(db):
     for name in ('version_regressions', 'epoch_regressions'):
         assert db.execute('SELECT to_regclass(%s)', (f'rsink.{name}',)).fetchone()[0] is not None
     assert db.execute("SELECT to_regclass('sink.stale_overwrites')").fetchone()[0] is None
+
+
+def test_d10_remote_exports_have_headers(db, tmp_path):
+    class Platform:
+        def get_db_connection(self):
+            from tests.conftest import test_dsn
+            return psycopg.connect(test_dsn(), autocommit=True)
+    runner = TrialRunner(Platform(), str(tmp_path), False, 1)
+    submit(db, 'C3r', 'k', 1, 1, uuid.uuid4())
+    runner._export_trial_data('v9')
+    for filename in ('attempts.csv', 'rsink_attempts.csv', 'rsink_fence.csv', 'rsink_state.csv'):
+        with (tmp_path / filename).open(newline='') as file:
+            rows = list(csv.DictReader(file))
+        assert rows, f'{filename} was not exported with rows and a header'
+        assert 'trial_id' in rows[0]
+
+
+def test_t16_first_write_delay_window(db):
+    former, successor = uuid.uuid4(), uuid.uuid4()
+    assert db.execute('SELECT own.acquire(%s,%s,%s)', ('S1', former, .3)).fetchone()[0] == 1
+    assert submit(db, 'C3r', 'k0', 1, 1, former, trial='window')['outcome'] == 'accepted'
+    time.sleep(.35)
+    assert db.execute('SELECT own.acquire(%s,%s,%s)', ('S1', successor, 60)).fetchone()[0] == 2
+    assert submit(db, 'C3', 'k1', 2, 1, former, trial='window')['outcome'] == 'rejected'
+    assert submit(db, 'C3r', 'k1', 2, 1, former, trial='window')['outcome'] == 'accepted'
+    assert submit(db, 'C3r', 'k2', 3, 2, successor, trial='window')['outcome'] == 'accepted'
+    assert submit(db, 'C3r', 'k3', 2, 1, former, trial='window')['outcome'] == 'rejected'
+    assert db.execute("SELECT late_accept_count FROM rsink.late_accepts WHERE trial_id='window'").fetchone()[0] == 1

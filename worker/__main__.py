@@ -6,6 +6,8 @@ import sys
 import threading
 import time
 import uuid
+import hashlib
+import random
 
 import psycopg
 
@@ -22,6 +24,8 @@ from worker.faults import FaultManager
 def main():
     """Main worker loop."""
     config = WorkerConfig.from_env()
+    # Derive each worker's reproducible retry stream from the canonical trial ID.
+    random.seed(int(hashlib.sha256(f'{config.trial_id}:{config.worker_id}'.encode()).hexdigest()[:16], 16))
 
     # Establish database connections
     conn = psycopg.connect(
@@ -44,20 +48,22 @@ def main():
             autocommit=True
         )
 
+    # A process has exactly one fencing identity across all managers.
+    incarnation = uuid.uuid4()
     # Initialize managers
-    lifecycle = LifecycleManager(conn, config)
-    ownership = OwnershipManager(conn, config)
+    lifecycle = LifecycleManager(conn, config, incarnation)
+    ownership = OwnershipManager(conn, config, incarnation)
     queue = QueueManager(conn, config)
-    sink = SinkManager(conn, rsink_conn, config)
-    preparer = ItemPreparer(config)
-    fault = FaultManager(conn, config)
+    sink = SinkManager(conn, rsink_conn, config, incarnation)
+    preparer = ItemPreparer(config, incarnation)
+    fault = FaultManager(conn, config, incarnation)
 
     # Register incarnation
     lifecycle.register_incarnation()
 
     # Start heartbeat thread
     stop_event = threading.Event()
-    heartbeat = HeartbeatThread(conn, config, stop_event)
+    heartbeat = HeartbeatThread(conn, config, stop_event, incarnation)
     heartbeat.start()
 
     # Start renewal thread (for lease mode)

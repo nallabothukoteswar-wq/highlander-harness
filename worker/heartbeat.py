@@ -10,13 +10,13 @@ import psycopg
 class HeartbeatThread(threading.Thread):
     """Background thread that writes heartbeats to the database."""
 
-    def __init__(self, conn: psycopg.Connection, config, stop_event: threading.Event):
+    def __init__(self, conn: psycopg.Connection, config, stop_event: threading.Event, incarnation: uuid.UUID):
         super().__init__(daemon=True)
         self.conn = conn
         self.config = config
         self.trial_id = config.trial_id
         self.worker_id = config.worker_id
-        self.incarnation = uuid.uuid4()
+        self.incarnation = incarnation
         self.stop_event = stop_event
         self.interval = 0.2  # 200 ms
 

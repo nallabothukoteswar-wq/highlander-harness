@@ -4,6 +4,7 @@ import os
 import uuid
 import json
 import random
+import hashlib
 from typing import Dict, List, Optional
 from datetime import datetime
 import csv
@@ -124,13 +125,17 @@ class TrialRunner:
 
     def _generate_trial_id(self, series: str, cell: Dict, replicate: int) -> str:
         """Generate a deterministic trial ID."""
-        cell_str = json.dumps(cell, sort_keys=True)
-        cell_hash = hash(cell_str) % 10000
-        return f"{series}_{cell_hash}_{replicate}"
+        payload = json.dumps([series, cell, replicate], sort_keys=True, separators=(',', ':'))
+        return f"{series}_{hashlib.sha256(payload.encode()).hexdigest()[:20]}_{replicate}"
+
+    def _trial_seed(self, series: str, cell: Dict, replicate: int) -> int:
+        trial_id = self._generate_trial_id(series, cell, replicate)
+        return int(hashlib.sha256(trial_id.encode()).hexdigest()[:16], 16)
 
     def _run_trial(self, trial_id: str, series: str, cell: Dict, replicate: int):
         """Run a single trial."""
         print(f"Running trial: {trial_id}")
+        random.seed(self._trial_seed(series, cell, replicate))
 
         # Reset database state
         self._reset_trial_state(trial_id, cell)
@@ -276,38 +281,26 @@ class TrialRunner:
     def _export_trial_data(self, trial_id: str):
         """Export trial data to CSV files."""
         conn = self.platform.get_db_connection()
-
-        # Export attempts
-        with open(os.path.join(self.campaign_dir, "attempts.csv"), 'a') as f:
-            writer = csv.writer(f)
-            result = conn.execute("""
-                SELECT * FROM sink.attempt_log WHERE trial_id = %s
-            """, (trial_id,))
-
-            for row in result:
-                writer.writerow(row)
-
-        # Export grants
-        with open(os.path.join(self.campaign_dir, "grants.csv"), 'a') as f:
-            writer = csv.writer(f)
-            result = conn.execute("""
-                SELECT * FROM own.grants WHERE stream_id = 'S1'
-            """)
-
-            for row in result:
-                writer.writerow(row)
-
-        # Export renewals
-        with open(os.path.join(self.campaign_dir, "renewals.csv"), 'a') as f:
-            writer = csv.writer(f)
-            result = conn.execute("""
-                SELECT * FROM own.renewals WHERE stream_id = 'S1'
-            """)
-
-            for row in result:
-                writer.writerow(row)
-
-        conn.close()
+        try:
+            for filename, table, column, value in (
+                ('attempts.csv', 'sink.attempt_log', 'trial_id', trial_id),
+                ('rsink_attempts.csv', 'rsink.attempt_log', 'trial_id', trial_id),
+                ('rsink_fence.csv', 'rsink.fence', 'trial_id', trial_id),
+                ('rsink_state.csv', 'rsink.state', 'trial_id', trial_id),
+                ('grants.csv', 'own.grants', 'stream_id', 'S1'),
+                ('renewals.csv', 'own.renewals', 'stream_id', 'S1'),
+            ):
+                path = os.path.join(self.campaign_dir, filename)
+                write_header = not os.path.exists(path) or os.path.getsize(path) == 0
+                # Both identifiers come only from the fixed table specification above.
+                result = conn.execute(f'SELECT * FROM {table} WHERE {column} = %s', (value,))
+                with open(path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    if write_header:
+                        writer.writerow([field.name for field in result.description])
+                    writer.writerows(result)
+        finally:
+            conn.close()
 
     def _record_trial(self, trial_id: str, series: str, cell: Dict, replicate: int, valid: bool, invalid_reason: Optional[str]):
         """Record trial result to trials.csv."""
@@ -330,7 +323,7 @@ class TrialRunner:
                 cell["condition"],
                 cell["workload"],
                 json.dumps(cell, sort_keys=True),
-                random.randint(0, 2**32 - 1),
+                self._trial_seed(series, cell, replicate),
                 self.platform.__class__.__name__,
                 valid,
                 invalid_reason
