@@ -39,6 +39,6 @@ lost_ack,C4,,replay_mismatch,30,3000,0,0
 after_grant,C3,0,late_accept,1,100,0,100
 after_grant,C3,1,late_accept,1,100,0,100
 after_grant,C3,5,late_accept,1,100,0,100
-after_grant,C3r,0,late_accept,1,100,1,100
-after_grant,C3r,1,late_accept,1,100,1,100
+after_grant,C3r,0,late_accept,1,100,100,100
+after_grant,C3r,1,late_accept,1,100,100,100
 after_grant,C3r,5,late_accept,1,100,0,100

@@ -1,4 +1,4 @@
-"""Generate manuscript outcome tables and a v6-to-v7 numeric audit from raw CSVs."""
+"""Generate manuscript outcome tables and versioned numeric audits from raw CSVs."""
 from __future__ import annotations
 
 import argparse
@@ -93,6 +93,8 @@ def generate(rows, config):
         'ObsLostPct': round(config['lost_ack_probability'] * 100),
         'ObsRetryMs': round(config['retry_delay_s'] * 1000),
         'ObsFirstWriteS': config['first_write_delay_s'],
+        'ObsOrderedRemoteLate': total(cell(rows, 'ordered_pause', 'C3r'), 'late_accept'),
+        'ObsAfterRemoteBefore': total(cell(rows, 'after_grant', 'C3r', 0), 'late_accept'),
     }
     (OUT / 'study_values.tex').write_text(''.join('\\newcommand{\\' + key + '}{' + str(value) + '}\n'
                                                  for key, value in macros.items()))
@@ -138,9 +140,52 @@ def audit(old_rows, new_rows, old_config, new_config):
     (ROOT / 'docs/V7_NUMBER_AUDIT.md').write_text('\n'.join(lines))
 
 
+def audit_v8(old_rows, new_rows, old_config, new_config, old_ref):
+    lines = ['# v8 result-number audit', '',
+             f'Before: raw CSV at commit `{old_ref}`. After: regenerated `paper/supplementary/sqlite_trials.csv`. '
+             'All observed counts below are computed from those CSVs. The changed sweep is a correction to event ordering, '
+             'not a measured performance improvement.', '',
+             '## Table VI', '', '| Condition | Metric | Before | After |',
+             '| --- | --- | ---: | ---: |']
+    for condition in CONDITIONS:
+        before, after = values(old_rows, condition), values(new_rows, condition)
+        for field in ('nD', 'nO', 'duplicates', 'version', 'epoch', 'late', 'rejected'):
+            lines.append(f'| {condition} | {field} | {before[field]} | {after[field]} |')
+    lines += ['', '## Table VII', '', '| Condition | Metric | Before | After |',
+              '| --- | --- | ---: | ---: |']
+    for condition in ('C2f', 'C3', 'C4'):
+        before, after = replay(old_rows, condition), replay(new_rows, condition)
+        for field in ('n', 'lost', 'accepted', 'rejected', 'stable', 'mismatch'):
+            lines.append(f'| {condition} | {field} | {before[field]} | {after[field]} |')
+    lines += ['', '## Figure 5, after-grant sweep', '',
+              '| Condition | Delay (s) | Before accepts / attempts | After accepts / attempts |',
+              '| --- | ---: | ---: | ---: |']
+    for condition in ('C3', 'C3r'):
+        for delay in new_config['resume_delays_s']:
+            before, after = cell(old_rows, 'after_grant', condition, delay), cell(new_rows, 'after_grant', condition, delay)
+            assert len(before) == old_config['after_grant_runs_per_cell']
+            assert len(after) == new_config['after_grant_runs_per_cell']
+            lines.append(f'| {condition} | {delay} | {total(before, "late_accept")}/{total(before, "at_risk_attempts")} | {total(after, "late_accept")}/{total(after, "at_risk_attempts")} |')
+    lines += ['', '## Abstract and inputs', '', '| Item | Before | After |',
+              '| --- | ---: | ---: |',
+              f'| Abstract numeric remote late-accept claim | Omitted | Omitted |',
+              f'| Ordered C3r late accepts (reported in V-C) | {total(cell(old_rows, "ordered_pause", "C3r"), "late_accept")} | {total(cell(new_rows, "ordered_pause", "C3r"), "late_accept")} |']
+    for label, key in (('Keys per run', 'keys_per_run'), ('Ordered runs per condition', 'ordered_runs_per_condition'),
+                       ('Duplicate runs per condition', 'duplicate_runs_per_condition'),
+                       ('Replay runs per condition', 'replay_runs_per_condition'),
+                       ('After-grant runs per cell', 'after_grant_runs_per_cell'),
+                       ('Successor first probability', 'successor_first_probability'),
+                       ('Acknowledgment loss probability', 'lost_ack_probability'),
+                       ('First-write delay (s)', 'first_write_delay_s')):
+        lines.append(f'| {label} | {old_config[key]} | {new_config[key]} |')
+    lines += ['', 'Other capacity numbers in the abstract are analytical illustration inputs; the v8 change does not modify that model.', '']
+    (ROOT / 'docs/V8_NUMBER_AUDIT.md').write_text('\n'.join(lines))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--old-ref', default=None, help='Git commit containing the previous public raw CSV')
+    parser.add_argument('--v8-ref', default=None, help='Git commit containing v7 raw CSV and schedule inputs')
     args = parser.parse_args()
     rows = read_csv(DATA / 'sqlite_trials.csv')
     config = json.loads((DATA / 'experiment_config.json').read_text())
@@ -154,6 +199,11 @@ def main():
                       'replay_runs_per_condition': len(cell(old_rows, 'lost_ack', 'C2f')),
                       'lost_ack_probability': .05}
         audit(old_rows, rows, old_config, config)
+    if args.v8_ref:
+        previous = lambda path: subprocess.check_output(['git', 'show', f'{args.v8_ref}:{path}'], cwd=ROOT, text=True)
+        old_rows = list(csv.DictReader(StringIO(previous('paper/supplementary/sqlite_trials.csv'))))
+        old_config = json.loads(previous('paper/supplementary/experiment_config.json'))
+        audit_v8(old_rows, rows, old_config, config, args.v8_ref)
     print('Generated observed tables and study values from raw CSVs.')
 
 

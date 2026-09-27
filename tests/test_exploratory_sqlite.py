@@ -67,9 +67,16 @@ class InterleavingChecks(unittest.TestCase):
                 if condition in ('C2f', 'C3', 'C4'):
                     self.assertEqual(row['rejected_fence'], 100)
 
-    def test_after_grant_remote_feed_window_is_single_write(self):
-        for d, expected in ((0, 1), (1, 1), (5, 0)):
-            self.assertEqual(one_after_grant('C3r', 0, d)['late_accept'], expected)
+    def test_after_grant_batch_precedes_or_follows_first_remote_write(self):
+        for d, expected in ((0, 100), (1, 100), (5, 0)):
+            with self.subTest(delay=d):
+                remote = one_after_grant('C3r', 0, d)
+                colocated = one_after_grant('C3', 0, d)
+                self.assertEqual(remote['late_accept'], expected)
+                self.assertEqual(remote.get('accepted', 0), expected)
+                self.assertEqual(remote.get('rejected_remote_epoch', 0), 100 - expected)
+                self.assertEqual(colocated['late_accept'], 0)
+                self.assertEqual(colocated['rejected_fence'], 100)
 
     def test_replay_returns_original_response(self):
         db = database()

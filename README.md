@@ -13,6 +13,7 @@ python3 -m unittest tests.test_exploratory_sqlite -v
 python3 -m analysis.exploratory_sqlite --output paper/supplementary
 python3 -m analysis.plot_exploratory
 python3 -m analysis.render_sqlite_results --old-ref 32e07037bb6a8f8d372e474222b8d5e140a32d12
+python3 -m analysis.render_sqlite_results --v8-ref 7468239
 ```
 
 ## Quick Start

@@ -157,18 +157,30 @@ def one_after_grant(condition, trial, delay_s):
     for i in range(KEYS):
         key = f'feed-{i}'
         submit(db, condition, key, f'{key}:initial', 1, 1, 'current', 1)
-    for i in range(KEYS):
-        key = f'feed-{i}'
-        # Grant epoch 2 at t=0. Successor first write at t=2 s; the former
-        # worker resumes at t=d. This is event-time ordering, not a wall-clock benchmark.
-        if delay_s >= FIRST_WRITE_DELAY_S:
+    # The whole captured batch resumes at t=d; the successor's first remote
+    # write occurs at t=2 s. Event-time ordering, not wall-clock benchmarking.
+    old_first = delay_s < FIRST_WRITE_DELAY_S
+
+    def release_old_batch():
+        for i in range(KEYS):
+            key = f'feed-{i}'
+            old = submit(db, condition, key, f'{key}:delayed', 2, 1, 'former', 2,
+                         first_write_after_grant=old_first)
+            totals['late_accept'] += old['late_accept']
+            totals['version_regression'] += old['version_regression']
+            totals[old['outcome']] += 1
+
+    def successor_publishes():
+        for i in range(KEYS):
+            key = f'feed-{i}'
             submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
-        old = submit(db, condition, key, f'{key}:delayed', 2, 1, 'former', 2,
-                     first_write_after_grant=delay_s < FIRST_WRITE_DELAY_S)
-        totals['late_accept'] += old['late_accept']
-        totals['version_regression'] += old['version_regression']
-        if delay_s < FIRST_WRITE_DELAY_S:
-            submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
+
+    if old_first:
+        release_old_batch()
+        successor_publishes()
+    else:
+        successor_publishes()
+        release_old_batch()
     db.close()
     return dict(series='after_grant', condition=condition, trial=trial,
                 seed=SEED + trial, delay_s=delay_s, items=KEYS,
