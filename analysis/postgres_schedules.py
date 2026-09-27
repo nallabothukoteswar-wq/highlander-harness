@@ -305,6 +305,7 @@ def main():
     summary = summarize(rows)
     write_rows(OUT / 'pg_summary.csv', summary, list(summary[0]))
     config = json.loads((OUT / 'experiment_config.json').read_text())
+    config['sink'] = 'PostgreSQL 16 scheduled SQL sink functions and attempt logs; no Kubernetes execution'
     config['postgresql_version'] = version
     config['postgresql_connection_route'] = 'GitHub Actions postgres:16 service' if os.environ.get('GITHUB_ACTIONS') else 'local PostgreSQL'
     (OUT / 'experiment_config.json').write_text(json.dumps(config, indent=2) + '\n')
