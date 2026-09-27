@@ -147,7 +147,7 @@ def run_cell(admin, condition, series, trial, delay=None):
     try:
         if lease:
             epoch_a = a.execute('SELECT own.acquire(%s,%s,%s::numeric)',
-                                ('S1', former, .3)).fetchone()[0]
+                                ('S1', former, 60)).fetchone()[0]
             assert epoch_a == 1
         if series != 'lost_ack':
             for i in range(KEYS):
@@ -156,7 +156,13 @@ def run_cell(admin, condition, series, trial, delay=None):
                 result = call(old_conn, trial_id, condition, key, original_key, 1, epoch_a, former)
                 assert result['outcome'] == 'accepted', (condition, series, i, result)
         if lease:
-            time.sleep(.35)
+            # Force setup expiry only after the full initial batch is committed.
+            # A short wall-clock lease makes slow CI runners reject initial writes.
+            changed = admin.execute("UPDATE own.owner SET expires_at = clock_timestamp() "
+                                    "- interval '1 second' WHERE stream_id = %s "
+                                    "AND holder = %s AND epoch = %s",
+                                    ('S1', former, epoch_a)).rowcount
+            assert changed == 1
             epoch_b = b.execute('SELECT own.acquire(%s,%s,%s::numeric)',
                                 ('S1', successor, 60)).fetchone()[0]
             assert epoch_b == 2

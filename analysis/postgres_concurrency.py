@@ -36,7 +36,7 @@ def interleaving(admin, condition, trial):
     former, current = uuid.uuid4(), uuid.uuid4()
     with psycopg.connect(dsn(role='worker_rw'), autocommit=True) as owner:
         epoch_old = owner.execute('SELECT own.acquire(%s,%s,%s::numeric)',
-                                  ('S1', former, .3)).fetchone()[0]
+                                  ('S1', former, 60)).fetchone()[0]
         assert epoch_old == 1
     def worker(identity, epoch, version, label, ready):
         role = 'rsink_rw' if condition == 'C3r' else 'worker_rw'
@@ -55,7 +55,11 @@ def interleaving(admin, condition, trial):
             key = f'feed-{i}'
             assert call(initial, run_id, condition, key, f'{key}:initial',
                         1, epoch_old, former)['outcome'] == 'accepted'
-    time.sleep(.35)
+    changed = admin.execute("UPDATE own.owner SET expires_at = clock_timestamp() "
+                            "- interval '1 second' WHERE stream_id = %s "
+                            "AND holder = %s AND epoch = %s",
+                            ('S1', former, epoch_old)).rowcount
+    assert changed == 1
     with psycopg.connect(dsn(role='worker_rw'), autocommit=True) as successor:
         epoch_new = successor.execute('SELECT own.acquire(%s,%s,%s::numeric)',
                                       ('S1', current, 60)).fetchone()[0]
