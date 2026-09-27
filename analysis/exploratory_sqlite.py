@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import random
 import sqlite3
 import time
 from collections import Counter
 from pathlib import Path
-
-import numpy as np
 
 CONDITIONS = ('C1', 'C1u', 'C1v', 'C2', 'C2f', 'C3', 'C3r', 'C4')
 LEASED = frozenset(('C2', 'C2f', 'C3', 'C3r', 'C4'))
@@ -22,12 +21,17 @@ FENCED = frozenset(('C2f', 'C3', 'C4'))
 KEYS = 100
 TRIALS = 30
 SEED = 2026
+SUCCESSOR_FIRST_PROBABILITY = .7
+LOST_ACK_PROBABILITY = .05
+FIRST_WRITE_DELAY_S = 2
+RETRY_DELAY_S = .05
 
 
 def database():
     db = sqlite3.connect(':memory:', isolation_level=None)
     db.execute('CREATE TABLE state (key TEXT PRIMARY KEY, version INTEGER, max_epoch INTEGER)')
     db.execute('CREATE TABLE ops (op_key TEXT PRIMARY KEY, response TEXT)')
+    db.execute('CREATE TABLE remote_feed (feed TEXT PRIMARY KEY, max_epoch INTEGER)')
     return db
 
 
@@ -38,11 +42,14 @@ def submit(db, condition, key, op_key, version, epoch, holder, current_epoch,
     try:
         pre = db.execute('SELECT version, max_epoch FROM state WHERE key=?', (key,)).fetchone()
         pre_version, pre_epoch = pre if pre else (None, None)
+        highest_applied_epoch = db.execute('SELECT MAX(max_epoch) FROM state').fetchone()[0]
+        remote_epoch = db.execute('SELECT max_epoch FROM remote_feed WHERE feed=?',
+                                  ('feed',)).fetchone()
         prior_response = db.execute('SELECT response FROM ops WHERE op_key=?', (op_key,)).fetchone()
         response_text = f'ok:{key}:{version}'
         if condition in FENCED and (epoch != current_epoch or holder != 'current'):
             outcome = 'rejected_fence'
-        elif condition == 'C3r' and pre_epoch is not None and epoch < pre_epoch:
+        elif condition == 'C3r' and remote_epoch is not None and epoch < remote_epoch[0]:
             outcome = 'rejected_remote_epoch'
         elif condition == 'C1v' and pre_version is not None and version <= pre_version:
             outcome = 'rejected_version'
@@ -57,6 +64,10 @@ def submit(db, condition, key, op_key, version, epoch, holder, current_epoch,
             db.execute('INSERT INTO state VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET '
                        'version=excluded.version, max_epoch=excluded.max_epoch',
                        (key, version, max_epoch))
+            if condition == 'C3r':
+                db.execute('INSERT INTO remote_feed VALUES (?, ?) ON CONFLICT(feed) DO UPDATE SET '
+                           'max_epoch=MAX(remote_feed.max_epoch, excluded.max_epoch)',
+                           ('feed', epoch))
             if condition in UNIQUE:
                 db.execute('INSERT INTO ops VALUES (?, ?)', (op_key, response_text))
         db.execute('COMMIT')
@@ -67,7 +78,8 @@ def submit(db, condition, key, op_key, version, epoch, holder, current_epoch,
     return dict(outcome=outcome, response=response_text if accepted or outcome == 'replayed' else None,
                 version_regression=int(accepted and pre_version is not None
                 and version < pre_version), epoch_regression=int(accepted and
-                condition in LEASED and pre_epoch is not None and epoch < pre_epoch),
+                condition in LEASED and highest_applied_epoch is not None
+                and epoch < highest_applied_epoch),
                 late_accept=int(accepted and condition == 'C3r' and
                 first_write_after_grant and epoch < current_epoch))
 
@@ -76,20 +88,24 @@ def one_ordered(condition, trial):
     rng = random.Random(SEED + trial)
     db = database()
     totals = Counter()
+    # All v1 publications precede the grant; the feed fence spans every item.
     for i in range(KEYS):
         key = f'feed-{i}'
-        # A valid old writer publishes v1. Ownership then moves to epoch 2.
         submit(db, condition, key, f'{key}:initial', 1, 1, 'current', 1)
-        successor_first = rng.random() < 0.7
+    keys = list(range(KEYS))
+    rng.shuffle(keys)
+    for i in keys:
+        key = f'feed-{i}'
+        successor_first = rng.random() < SUCCESSOR_FIRST_PROBABILITY
         if successor_first:
-            submit(db, condition, key, f'{key}:successor', 2, 2, 'current', 2)
-        old = submit(db, condition, key, f'{key}:delayed', 0, 1, 'former', 2,
+            submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
+        old = submit(db, condition, key, f'{key}:delayed', 2, 1, 'former', 2,
                      first_write_after_grant=not successor_first)
         for field in ('version_regression', 'epoch_regression', 'late_accept'):
             totals[field] += old[field]
         totals[old['outcome']] += 1
         if not successor_first:
-            submit(db, condition, key, f'{key}:successor', 2, 2, 'current', 2)
+            submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
     db.close()
     return dict(series='ordered_pause', condition=condition, trial=trial,
                 seed=SEED + trial,
@@ -102,7 +118,7 @@ def one_duplicate(condition, trial):
     for i in range(KEYS):
         key = f'op-{i}'
         submit(db, condition, key, key, 1, 1, 'current', 1)
-        again = submit(db, condition, key, key, 2, 2, 'current', 2)
+        again = submit(db, condition, key, key, 1, 1, 'former', 2)
         totals[again['outcome']] += 1
         totals['accepted_duplicates'] += again['outcome'] == 'accepted'
     db.close()
@@ -119,10 +135,10 @@ def one_replay(condition, trial):
         key = f'retry-{i}'
         original = submit(db, condition, key, key, 1, 1, 'current', 1)
         assert original['outcome'] == 'accepted'
-        if rng.random() >= .05:
+        if rng.random() >= LOST_ACK_PROBABILITY:
             continue
         totals['lost_ack'] += 1
-        time.sleep(.05)
+        time.sleep(RETRY_DELAY_S)
         retry = submit(db, condition, key, key, 1, 1, 'current', 1)
         category = {'accepted': 'duplicate_accepted',
                     'rejected_duplicate': 'unresolved_ambiguous',
@@ -141,16 +157,18 @@ def one_after_grant(condition, trial, delay_s):
     for i in range(KEYS):
         key = f'feed-{i}'
         submit(db, condition, key, f'{key}:initial', 1, 1, 'current', 1)
+    for i in range(KEYS):
+        key = f'feed-{i}'
         # Grant epoch 2 at t=0. Successor first write at t=2 s; the former
         # worker resumes at t=d. This is event-time ordering, not a wall-clock benchmark.
-        if delay_s >= 2:
-            submit(db, condition, key, f'{key}:successor', 2, 2, 'current', 2)
-        old = submit(db, condition, key, f'{key}:delayed', 0, 1, 'former', 2,
-                     first_write_after_grant=delay_s < 2)
+        if delay_s >= FIRST_WRITE_DELAY_S:
+            submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
+        old = submit(db, condition, key, f'{key}:delayed', 2, 1, 'former', 2,
+                     first_write_after_grant=delay_s < FIRST_WRITE_DELAY_S)
         totals['late_accept'] += old['late_accept']
         totals['version_regression'] += old['version_regression']
-        if delay_s < 2:
-            submit(db, condition, key, f'{key}:successor', 2, 2, 'current', 2)
+        if delay_s < FIRST_WRITE_DELAY_S:
+            submit(db, condition, key, f'{key}:successor', 3, 2, 'current', 2)
     db.close()
     return dict(series='after_grant', condition=condition, trial=trial,
                 seed=SEED + trial, delay_s=delay_s, items=KEYS,
@@ -173,21 +191,31 @@ def main():
     for condition in CONDITIONS:
         for trial in range(TRIALS):
             rows.append(one_ordered(condition, trial))
-            if condition != 'C1v':
-                rows.append(one_duplicate(condition, trial))
+        # The duplicate pause is deterministic under the stated schedule.
+        if condition != 'C1v':
+            rows.append(one_duplicate(condition, 0))
     for condition in ('C2f', 'C3', 'C4'):
         for trial in range(TRIALS):
             rows.append(one_replay(condition, trial))
     for condition in ('C3', 'C3r'):
         for delay_s in (0, 1, 5):
-            for trial in range(TRIALS):
-                rows.append(one_after_grant(condition, trial, delay_s))
+            rows.append(one_after_grant(condition, 0, delay_s))
     fields = ['series', 'condition', 'trial', 'seed', 'delay_s', 'items', 'at_risk_attempts',
               'accepted', 'rejected_fence', 'rejected_remote_epoch', 'rejected_version',
               'rejected_duplicate', 'replayed', 'accepted_duplicates',
               'version_regression', 'epoch_regression', 'late_accept', 'lost_ack',
               'duplicate_accepted', 'unresolved_ambiguous', 'replay_stable', 'replay_mismatch']
     write_rows(args.output / 'sqlite_trials.csv', rows, fields)
+    (args.output / 'experiment_config.json').write_text(json.dumps({
+        'seed': SEED, 'keys_per_run': KEYS, 'ordered_runs_per_condition': TRIALS,
+        'duplicate_runs_per_condition': 1, 'replay_runs_per_condition': TRIALS,
+        'after_grant_runs_per_cell': 1,
+        'successor_first_probability': SUCCESSOR_FIRST_PROBABILITY,
+        'lost_ack_probability': LOST_ACK_PROBABILITY,
+        'first_write_delay_s': FIRST_WRITE_DELAY_S,
+        'retry_delay_s': RETRY_DELAY_S, 'resume_delays_s': [0, 1, 5],
+        'sink': 'SQLite scheduled rule model; no PostgreSQL or Kubernetes execution'
+    }, indent=2) + '\n')
     summary = []
     for series in ('ordered_pause', 'duplicate_pause', 'lost_ack', 'after_grant'):
         for condition in CONDITIONS:
@@ -205,17 +233,12 @@ def main():
                 for metric in fields_for_series:
                     if metric == 'epoch_regression' and condition not in LEASED:
                         continue
-                    values = np.array([r.get(metric, 0) for r in group], dtype=float)
-                    rng = np.random.default_rng(SEED)
-                    means = values[rng.integers(0, len(values), (10000, len(values)))].mean(axis=1)
-                    low, high = np.quantile(means, [.025, .975])
-                    count = int(values.sum())
+                    count = sum(r.get(metric, 0) for r in group)
                     summary.append(dict(series=series, condition=condition,
                                         delay_s='' if delay_s is None else delay_s, metric=metric,
-                                        planned=TRIALS, valid=len(group), invalid=0,
+                                        scheduled_runs=len(group),
                                         items=sum(r['items'] for r in group), events=count,
-                                        mean_per_trial=float(values.mean()),
-                                        bootstrap_95_low=float(low), bootstrap_95_high=float(high)))
+                                        at_risk_attempts=sum(r['at_risk_attempts'] for r in group)))
     write_rows(args.output / 'sqlite_summary.csv', summary, list(summary[0]))
     print('Wrote', len(rows), 'raw trial rows and', len(summary), 'summary rows to', args.output)
 

@@ -1,0 +1,15 @@
+\begin{table*}[!t]\caption{Scripted SQLite interleaving outcomes. Counts reflect the specified schedule and sink rules, not failure-rate estimates.}\label{tab:results}
+\centering\footnotesize\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lccccccc}\toprule
+Condition & $n_D$ & $n_O$ & Duplicates & Version reg. & Epoch reg. & Late & Rejected$_O$\\\midrule
+C1 & 1 & 30 & 100 & 2,071 & N/A & N/A & 0\\
+C1u & 1 & 30 & 0 & 2,071 & N/A & N/A & 0\\
+C1v & N/A & 30 & N/A & 0 & N/A & N/A & 2,071\\
+C2 & 1 & 30 & 100 & 2,071 & 2,991 & N/A & 0\\
+C2f & 1 & 30 & 0 & 0 & 0 & N/A & 3,000\\
+C3 & 1 & 30 & 0 & 0 & 0 & 0 & 3,000\\
+C3r & 1 & 30 & 0 & 0 & 0 & 9 & 2,991\\
+C4 & 1 & 30 & 0 & 0 & 0 & N/A & 3,000\\\bottomrule
+\end{tabular}
+\par\vspace{4pt}\parbox{.95\textwidth}{\scriptsize $n_D/n_O$: scheduled duplicate/ordered runs; each run has 100 keys. Version and epoch regressions are separate outcomes on the ordered workload. Late means an accepted former-epoch write after grant and before the successor's first remote write. Rejected$_O$: delayed ordered attempts rejected by a guard. N/A: inapplicable or not measured. CPU and provider cost are not measured.}
+\end{table*}

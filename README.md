@@ -2,7 +2,7 @@
 
 Experiment harness for the paper "Workload-Aware Deployment Pattern Selection for Cloud-Native Commerce Systems" (Highlander).
 
-The seven-page IEEE conference manuscript source is in [`paper/manuscript.tex`](paper/manuscript.tex); its figures and references are in the same directory. The paper includes controlled SQLite interleaving results with [raw trials, summaries and scope notes](paper/supplementary/README.md). The planned Kubernetes/PostgreSQL campaign remains unrun.
+The seven-page IEEE conference manuscript source is in [`paper/manuscript.tex`](paper/manuscript.tex); its figures and references are in the same directory. The paper includes a scripted SQLite sink-rule study with [raw schedules, summary counts and scope notes](paper/supplementary/README.md). These counts are not failure-rate estimates. The planned Kubernetes/PostgreSQL campaign remains unrun.
 
 **Implementation status:** The runner, Series C after-grant delay, replay classification, and Series F/G service/load generation are incomplete. The commands below describe the intended interface and are not evidence that a full campaign succeeds. The analysis report entry point and several referenced files are still missing.
 
@@ -12,6 +12,7 @@ Reproduce the limited SQLite mechanism study without a cluster:
 python3 -m unittest tests.test_exploratory_sqlite -v
 python3 -m analysis.exploratory_sqlite --output paper/supplementary
 python3 -m analysis.plot_exploratory
+python3 -m analysis.render_sqlite_results --old-ref 32e07037bb6a8f8d372e474222b8d5e140a32d12
 ```
 
 ## Quick Start

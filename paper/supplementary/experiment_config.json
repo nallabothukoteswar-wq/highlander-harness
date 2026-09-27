@@ -1,0 +1,18 @@
+{
+  "seed": 2026,
+  "keys_per_run": 100,
+  "ordered_runs_per_condition": 30,
+  "duplicate_runs_per_condition": 1,
+  "replay_runs_per_condition": 30,
+  "after_grant_runs_per_cell": 1,
+  "successor_first_probability": 0.7,
+  "lost_ack_probability": 0.05,
+  "first_write_delay_s": 2,
+  "retry_delay_s": 0.05,
+  "resume_delays_s": [
+    0,
+    1,
+    5
+  ],
+  "sink": "SQLite scheduled rule model; no PostgreSQL or Kubernetes execution"
+}
