@@ -54,6 +54,7 @@ jobs:
             paper/supplementary/pg_concurrency_trials.csv
             paper/supplementary/pg_concurrency_summary.csv
             paper/supplementary/pg_acquisition_races.csv
+            paper/supplementary/pg_concurrency_config.json
             paper/supplementary/experiment_config.json
             docs/PG_VS_SQLITE.md
           if-no-files-found: warn
