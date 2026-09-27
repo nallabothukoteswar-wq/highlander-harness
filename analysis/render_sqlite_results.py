@@ -107,44 +107,72 @@ def generate(rows, config, source="sqlite"):
 
 
 def generate_concurrency():
-    """Derive the entire threaded-results table from PostgreSQL trial CSVs."""
+    """Derive the handover and acquisition results entirely from SQL trial CSVs."""
     trials = read_csv(DATA / 'pg_concurrency_trials.csv')
     races = read_csv(DATA / 'pg_acquisition_races.csv')
-    assert len(races) == 1000
-    assert all(int(r['winners']) == int(r['grants']) == 1 for r in races)
+    config = json.loads((DATA / 'pg_concurrency_config.json').read_text())
     conditions = ('C2f', 'C3', 'C4', 'C3r')
-    table = [r'\begin{table}[t]\caption{Threaded PostgreSQL interleavings; accepted former-epoch effects and late accepts are counted from SQL logs.}\label{tab:concurrency}',
-             r'\centering\footnotesize', r'\begin{tabular}{lrrr}\toprule',
-             r'Condition & Runs & Former accepted / attempts & Late accepts\\\midrule']
+    repeats = range(config['repeats'])
+    assert len(trials) == len(conditions) * len(repeats) * config['runs_per_condition_per_repeat']
+    for condition in conditions:
+        for repeat in repeats:
+            group = [r for r in trials if r['condition'] == condition and int(r['repeat']) == repeat]
+            assert len(group) == config['runs_per_condition_per_repeat']
+            assert all(int(r['former_attempts']) == config['items_per_worker']
+                       and int(r['late_accept']) <= int(r['post_grant_attempts'])
+                       and int(r['epoch_regression']) == 0 for r in group)
+    for path, epoch in (('fresh', 1), ('expired', 2)):
+        group = [r for r in races if r['path'] == path]
+        assert len(group) == config['acquisition_rounds_per_path']
+        assert all(int(r['winners']) == int(r['grants_at_epoch']) == 1
+                   and int(r['winning_epoch']) == int(r['expected_epoch']) == epoch
+                   for r in group)
+    table = [r'\begin{table}[t]\caption{Active-handover races on PostgreSQL. Only SQL commits after epoch-2 grant count as late accepts.}\label{tab:concurrency}',
+             r'\centering\footnotesize\setlength{\tabcolsep}{3.5pt}',
+             r'\begin{tabular}{lrrr}\toprule',
+             r'Condition & Runs & Pre-grant accepted & Late / post-grant\\\midrule']
     for condition in conditions:
         group = [r for r in trials if r['condition'] == condition]
-        assert len(group) == 30 and all(int(r['former_attempts']) == 20 for r in group)
-        accepted = total(group, 'former_accepted')
-        attempts = total(group, 'former_attempts')
-        late = total(group, 'late_accept')
-        assert total(group, 'epoch_regression') == 0
-        table.append(f'{condition} & {len(group)} & {accepted}/{attempts} & {late}' + r'\\')
+        table.append(f'{condition} & {len(group)} & {total(group, "pre_grant_accepted"):,} & '
+                     f'{total(group, "late_accept"):,}/{total(group, "post_grant_attempts"):,}' + r'\\')
     table[-1] = table[-1][:-2] + r'\\\bottomrule'
     table += [r'\end{tabular}', r'\end{table}']
     (OUT / 'concurrency_table.tex').write_text('\n'.join(table) + '\n')
+    remote = [total([r for r in trials if r['condition'] == 'C3r' and int(r['repeat']) == repeat],
+                    'late_accept') for repeat in repeats]
+    macros = {
+        'ObsThreadRepeats': len(repeats),
+        'ObsThreadRuns': config['runs_per_condition_per_repeat'],
+        'ObsThreadKeys': config['items_per_worker'],
+        'ObsThreadRemoteMin': min(remote),
+        'ObsThreadRemoteMax': max(remote),
+        'ObsThreadRemoteTotal': sum(remote),
+        'ObsFreshWins': f'{sum(int(r["winners"]) for r in races if r["path"] == "fresh"):,}',
+        'ObsExpiredWins': f'{sum(int(r["winners"]) for r in races if r["path"] == "expired"):,}',
+        'ObsFreshEpoch': 1,
+        'ObsExpiredEpoch': 2,
+        'ObsAcquisitionDelta': 1,
+    }
     with (OUT / 'study_values.tex').open('a') as stream:
-        for key, value in (('ObsThreadRuns', len(trials) // len(conditions)),
-                           ('ObsThreadKeys', int(trials[0]['former_attempts'])),
-                           ('ObsAcquisitionRounds', f'{len(races):,}'),
-                           ('ObsAcquisitionWinners', f'{sum(int(r["winners"]) for r in races):,}'),
-                           ('ObsThreadRemoteLate', total([r for r in trials if r['condition'] == 'C3r'], 'late_accept'))):
+        for key, value in macros.items():
             stream.write('\\newcommand{\\' + key + '}{' + str(value) + '}\n')
-    audit = ['# Threaded PostgreSQL result audit', '',
-             'Derived from `paper/supplementary/pg_concurrency_trials.csv` and '
-             '`pg_acquisition_races.csv`; the SQL runner wrote every raw row.', '',
-             '| Condition | Runs | Former attempts | Former accepted | Late accepts |',
-             '| --- | ---: | ---: | ---: | ---: |']
-    for condition in conditions:
-        group = [r for r in trials if r['condition'] == condition]
-        audit.append(f'| {condition} | {len(group)} | {total(group, "former_attempts")} | '
-                     f'{total(group, "former_accepted")} | {total(group, "late_accept")} |')
-    audit += ['', f'Acquisition races: {len(races):,}; rounds with exactly one winner '
-              f'and one grant: {sum(int(r["winners"]) == int(r["grants"]) == 1 for r in races):,}.', '']
+    audit = ['# Active-handover PostgreSQL audit', '',
+             'All figures below are derived from `pg_concurrency_trials.csv`, '
+             '`pg_acquisition_races.csv`, and `pg_concurrency_config.json`.', '',
+             '| Repeat | Condition | Runs | Pre-grant accepted | Post-grant attempts | Late accepts |',
+             '| ---: | --- | ---: | ---: | ---: | ---: |']
+    for repeat in repeats:
+        for condition in conditions:
+            group = [r for r in trials if r['condition'] == condition and int(r['repeat']) == repeat]
+            audit.append(f'| {repeat} | {condition} | {len(group)} | '
+                         f'{total(group, "pre_grant_accepted")} | '
+                         f'{total(group, "post_grant_attempts")} | '
+                         f'{total(group, "late_accept")} |')
+    audit += ['', f'C3r late-accept range across repetitions: {min(remote)}--{max(remote)}.',
+              f'Fresh-key races: {macros["ObsFreshWins"]} single winners at epoch '
+              f'{macros["ObsFreshEpoch"]}.',
+              f'Expired-lease races: {macros["ObsExpiredWins"]} single winners at epoch '
+              f'{macros["ObsExpiredEpoch"]}, an increment of {macros["ObsAcquisitionDelta"]}.', '']
     (ROOT / 'docs/PG_CONCURRENCY_AUDIT.md').write_text('\n'.join(audit))
 
 

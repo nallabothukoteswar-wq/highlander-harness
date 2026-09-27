@@ -1,10 +1,10 @@
-\begin{table}[t]\caption{Threaded PostgreSQL interleavings; accepted former-epoch effects and late accepts are counted from SQL logs.}\label{tab:concurrency}
-\centering\footnotesize
+\begin{table}[t]\caption{Active-handover races on PostgreSQL. Only SQL commits after epoch-2 grant count as late accepts.}\label{tab:concurrency}
+\centering\footnotesize\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lrrr}\toprule
-Condition & Runs & Former accepted / attempts & Late accepts\\\midrule
-C2f & 30 & 0/600 & 0\\
-C3 & 30 & 0/600 & 0\\
-C4 & 30 & 0/600 & 0\\
-C3r & 30 & 19/600 & 19\\\bottomrule
+Condition & Runs & Pre-grant accepted & Late / post-grant\\\midrule
+C2f & 150 & 1,494 & 0/4,138\\
+C3 & 150 & 1,487 & 0/4,131\\
+C4 & 150 & 1,490 & 0/4,125\\
+C3r & 150 & 1,866 & 436/4,134\\\bottomrule
 \end{tabular}
 \end{table}

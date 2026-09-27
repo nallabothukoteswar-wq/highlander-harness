@@ -1,0 +1,10 @@
+{
+  "postgresql_version": "16.15 (Debian 16.15-1.pgdg13+2)",
+  "seed": 2026,
+  "repeats": 5,
+  "runs_per_condition_per_repeat": 30,
+  "items_per_worker": 40,
+  "handover_after_former_writes": 8,
+  "acquisition_rounds_per_path": 1000,
+  "takeover": "admin expires owner row after initial writes; own.acquire issues epoch 2"
+}
